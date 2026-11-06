@@ -1,5 +1,6 @@
 -- CodeBot V2 | Roblox Luau (Delta / mobile compatible)
 -- The S: ATOM-style GUI + ESP + Orbit HVH + Auto Block + Halloween farm
+-- + Direct Auto Doors, Bypass Anticheat, 0.2s Domain, Anti AFK, Fullbright
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -11,7 +12,7 @@ local StatsService = game:GetService("Stats")
 local player = Players.LocalPlayer
 
 -- how fast the window / floating buttons follow your finger (1 = same speed as the finger)
-local DRAG_SPEED = 0.7
+local DRAG_SPEED = 0.6
 
 -- stop any previous copy of this script before starting a new one
 if getgenv().TheS_Cleanup then pcall(getgenv().TheS_Cleanup) end
@@ -47,11 +48,18 @@ getgenv().Config = {
 	DoorTravelSpeed = 200,
 	FlyHeight = 80,
 	OpenTimeout = 6,
+	DirectDoorRoute = true,
 	KillFarmEnabled = false,
 	KillFarmRole = "Killer",
 	KillFarmSpeed = 385,
 	UseIdleSpot = true,
 	StableCamera = true,
+
+	ACBypassEnabled = false,
+	DomainEnabled = false,
+	DomainInterval = 0.2,
+	AntiAFKEnabled = true,
+	FullbrightEnabled = false,
 
 	AutoBlockEnabled = false,
 	MobileBlockButton = true,
@@ -92,6 +100,7 @@ getgenv().Config = {
 
 local Character, Humanoid, HumanoidRootPart
 local hvhTarget = nil -- locked target while HVH is on
+local DoorState = { wants = false } -- true while a door is ready to open (pauses the orbit)
 
 local function UpdateCharacter(newChar)
 	Character = newChar
@@ -849,6 +858,7 @@ xpcall(function() -- Halloween (Farm)
 	addToggle(a, "Show Distance", true, function(v) getgenv().Config.DoorShowDistance = v end)
 	addColor(a, "ESP Colour", Color3.fromRGB(255, 200, 0), function(v) getgenv().Config.DoorColor = v end)
 	addToggle(a, "Auto Doors", false, function(v) getgenv().Config.AutoFarmDoors = v end)
+	addToggle(a, "Direct Route (noclip, straight to door)", true, function(v) getgenv().Config.DirectDoorRoute = v end)
 	addToggle(a, "Invisible While Farming", true, function(v) getgenv().Config.InvisibleFarming = v end)
 	addSlider(a, "Walk Speed To Door", 16, 400, 200, " st/s", function(v) getgenv().Config.DoorTravelSpeed = v end)
 	addSlider(a, "Fly Height", 10, 200, 80, " studs", function(v) getgenv().Config.FlyHeight = v end)
@@ -969,6 +979,25 @@ xpcall(function() -- Avatar (Visuals)
 	finish(a)
 end, function(e) warn("The S: tab \"Avatar (Visuals)\" failed: " .. tostring(e)) end)
 
+xpcall(function() -- Teleports (Exploits)
+	local p = newPage("Teleports")
+
+	local a = section(p.left, "Bypass Anticheat", 1, false, "✦")
+	UIRefs.setAC = addToggle(a, "Bypass Anticheat", false, function(v) Actions.acBypass(v) end)
+	addButton(a, "Set Teleport Spot (here)", function(btn) Actions.setSpot(btn) end)
+	finish(a)
+
+	local b = section(p.left, "Domain", 2, false, "✦")
+	addToggle(b, "0.2s Domain (TP to players)", false, function(v) getgenv().Config.DomainEnabled = v end)
+	addSlider(b, "Domain Interval", 0.05, 2, 0.2, "s", function(v) getgenv().Config.DomainInterval = v end, 0.05)
+	finish(b)
+
+	local c = section(p.right, "Extras", 1, false, "✦")
+	addToggle(c, "Anti AFK", true, function(v) getgenv().Config.AntiAFKEnabled = v end)
+	addToggle(c, "Fullbright", false, function(v) Actions.fullbright(v) end)
+	finish(c)
+end, function(e) warn("The S: tab \"Teleports\" failed: " .. tostring(e)) end)
+
 xpcall(function() -- Colors
 	local p = newPage("Colors")
 	local cl = section(p.left, "Theme Colors", 1, false, "◐")
@@ -1048,6 +1077,7 @@ addCategory("Main", { { "Home", "⌂" } })
 addCategory("Visuals", { { "ESP", "◎" }, { "Avatar", "◍" } })
 addCategory("Farm", { { "Halloween", "✧" } })
 addCategory("Combat", { { "Auto Block", "◈" }, { "Combat & HVH", "◆" } })
+addCategory("Exploits", { { "Teleports", "✦" } })
 addCategory("Settings", { { "Colors", "◐" } })
 
 selectPage("Home")
@@ -1457,6 +1487,7 @@ table.insert(connections, Players.PlayerRemoving:Connect(removePlayerESP))
 
 ---------------------------------------------------------------------
 -- HVH ORBIT (moves your real character, so the server sees it)
+-- pauses automatically while Auto Doors has a ready door to open
 ---------------------------------------------------------------------
 local orbitAngle = 0
 local wasOrbiting = false
@@ -1467,7 +1498,7 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt)
 	local cfg = getgenv().Config
 	dt = math.min(dt, 0.1)
 
-	local canOrbit = cfg.HVHEnabled and HumanoidRootPart and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0
+	local canOrbit = cfg.HVHEnabled and not DoorState.wants and not cfg.DomainEnabled and HumanoidRootPart and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0
 	if canOrbit then
 		local targetRoot = getTargetRoot()
 		if targetRoot then
@@ -1649,7 +1680,7 @@ end
 
 local function doorFarmActive()
 	local cfg = getgenv().Config
-	return running and cfg.AutoFarmDoors and not cfg.HVHEnabled
+	return running and cfg.AutoFarmDoors and not cfg.DomainEnabled
 		and HumanoidRootPart and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0
 end
 
@@ -1895,11 +1926,23 @@ function DoorNav.walk(goal, reach, deadline)
 	return false
 end
 
+-- Direct Route ON : slide straight at the door through walls; if that stalls, fly over it
+-- Direct Route OFF: walk with pathfinding first, fly over only when walking is blocked
 local function walkTo(targetPos, reach, timeout, door)
 	local hrp = HumanoidRootPart
 	if (hrp.Position - targetPos).Magnitude <= reach then return true end
-	local deadline = os.clock() + timeout
 	DoorNav.door = door
+	local deadline = os.clock() + timeout
+
+	if getgenv().Config.DirectDoorRoute then
+		setFarmStatus("Going straight to door")
+		local function near() return HumanoidRootPart and (HumanoidRootPart.Position - targetPos).Magnitude <= reach end
+		if glideTo(targetPos, near, deadline) or near() then return true end
+		if not doorFarmActive() or doorTaken() then return false end
+		setFarmStatus("Stuck, flying over")
+		return flyTo(targetPos, reach, 15)
+	end
+
 	setFarmStatus(string.format("Walking to door (%dm)", math.floor((targetPos - hrp.Position).Magnitude)))
 	if DoorNav.walk(targetPos, reach, deadline) then return true end
 	if doorTaken() then return false end
@@ -1912,6 +1955,7 @@ end
 local function doorLoopStep()
 	local cfg = getgenv().Config
 	if not doorFarmActive() then
+		DoorState.wants = false
 		restoreDoorSpeed()
 		farmDoorBusy = false
 		task.wait(0.3)
@@ -1919,6 +1963,7 @@ local function doorLoopStep()
 	end
 
 	local door = pickDoor()
+	DoorState.wants = door ~= nil -- a ready door pauses the HVH spin until it is handled
 	if not door then
 		farmDoorBusy = false
 		if not cfg.KillFarmEnabled then setFarmStatus("Waiting for door") end
@@ -2063,7 +2108,7 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt)
 	local cfg = getgenv().Config
 	dt = math.min(dt, 0.1)
 	local alive = HumanoidRootPart and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0
-	local farming = alive and not cfg.HVHEnabled and (cfg.AutoFarmDoors or cfg.KillFarmEnabled)
+	local farming = alive and (DoorState.wants or not cfg.HVHEnabled) and (cfg.AutoFarmDoors or cfg.KillFarmEnabled)
 	setFarmInvisible((farming and cfg.InvisibleFarming) and true or false)
 
 	if alive and not cfg.HVHEnabled and cfg.KillFarmEnabled and not farmDoorBusy then
@@ -2489,6 +2534,116 @@ Actions.restore = function(btn)
 end
 
 ---------------------------------------------------------------------
+-- BYPASS ANTICHEAT (just a name: resets your character, then teleports it to a spot;
+-- if the teleport doesn't stick it resets and tries again, up to 25 times)
+---------------------------------------------------------------------
+local AC = { running = false, spot = nil }
+
+Actions.setSpot = function(btn)
+	if HumanoidRootPart then
+		AC.spot = HumanoidRootPart.Position
+		flash(btn, "Spot saved!", "Set Teleport Spot (here)")
+	else
+		flash(btn, "No character", "Set Teleport Spot (here)")
+	end
+end
+
+local function waitForNewRoot(timeout)
+	local old, t0 = HumanoidRootPart, os.clock()
+	while os.clock() - t0 < timeout do
+		if HumanoidRootPart and HumanoidRootPart ~= old and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0 then
+			return true
+		end
+		task.wait(0.1)
+	end
+	return false
+end
+
+Actions.acBypass = function(on)
+	local cfg = getgenv().Config
+	cfg.ACBypassEnabled = on
+	if not on or AC.running or not HumanoidRootPart then return end
+	AC.running = true
+	task.spawn(function()
+		local spot = AC.spot or HumanoidRootPart.Position -- no saved spot = where you switched it on
+		local attempts, success = 0, false
+		while cfg.ACBypassEnabled and running and attempts < 25 and not success do
+			attempts = attempts + 1
+			pcall(function() Humanoid.Health = 0 end)
+			pcall(function() Character:BreakJoints() end)
+			if waitForNewRoot(8) then
+				task.wait(0.3)
+				for _ = 1, 3 do
+					if HumanoidRootPart then HumanoidRootPart.CFrame = CFrame.new(spot + Vector3.new(0, 3, 0)) end
+					task.wait(0.15)
+				end
+				task.wait(0.4)
+				if HumanoidRootPart and (HumanoidRootPart.Position - spot).Magnitude < 15 then success = true end
+			end
+		end
+		AC.running = false
+		cfg.ACBypassEnabled = false
+		if UIRefs.setAC then UIRefs.setAC(false) end
+		print("The S: Bypass Anticheat " .. (success and "teleported after " or "gave up after ") .. attempts .. " tries")
+	end)
+end
+
+---------------------------------------------------------------------
+-- 0.2s DOMAIN (cycles through every alive player with an instant teleport)
+---------------------------------------------------------------------
+local domainClock, domainIndex = 0, 0
+table.insert(connections, RunService.Heartbeat:Connect(function(dt)
+	local cfg = getgenv().Config
+	if not cfg.DomainEnabled or not HumanoidRootPart or not HumanoidRootPart.Parent or not Humanoid or Humanoid.Health <= 0 then
+		domainClock = 0
+		return
+	end
+	domainClock = domainClock + dt
+	if domainClock < cfg.DomainInterval then return end
+	domainClock = 0
+	local list = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player and p.Character then
+			local r = p.Character:FindFirstChild("HumanoidRootPart")
+			local h = p.Character:FindFirstChildOfClass("Humanoid")
+			if r and h and h.Health > 0 then list[#list + 1] = r end
+		end
+	end
+	if #list == 0 then return end
+	domainIndex = domainIndex % #list + 1
+	HumanoidRootPart.CFrame = list[domainIndex].CFrame * CFrame.new(0, 0, 3)
+	HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+	HumanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+end))
+
+---------------------------------------------------------------------
+-- ANTI AFK + FULLBRIGHT
+---------------------------------------------------------------------
+pcall(function()
+	table.insert(connections, player.Idled:Connect(function()
+		if getgenv().Config.AntiAFKEnabled then
+			local vu = game:GetService("VirtualUser")
+			vu:CaptureController()
+			vu:ClickButton2(Vector2.new())
+		end
+	end))
+end)
+
+local Lighting = game:GetService("Lighting")
+local origLight = nil
+Actions.fullbright = function(on)
+	getgenv().Config.FullbrightEnabled = on
+	if on then
+		origLight = origLight or { Brightness = Lighting.Brightness, ClockTime = Lighting.ClockTime, FogEnd = Lighting.FogEnd, Ambient = Lighting.Ambient }
+		Lighting.Brightness, Lighting.ClockTime, Lighting.FogEnd = 2, 14, 100000
+		Lighting.Ambient = Color3.fromRGB(180, 180, 180)
+	elseif origLight then
+		for k, v in pairs(origLight) do Lighting[k] = v end
+		origLight = nil
+	end
+end
+
+---------------------------------------------------------------------
 -- MAIN RENDER LOOP
 ---------------------------------------------------------------------
 local frameCount = 0
@@ -2712,6 +2867,9 @@ local function cleanup()
 	getgenv().Config.AutoFarmDoors = false
 	getgenv().Config.KillFarmEnabled = false
 	getgenv().Config.AutoBlockEnabled = false
+	getgenv().Config.DomainEnabled = false
+	getgenv().Config.ACBypassEnabled = false
+	Actions.fullbright(false)
 	setFarmInvisible(false)
 	if Humanoid then Humanoid.AutoRotate = true end
 	local cam = workspace.CurrentCamera
