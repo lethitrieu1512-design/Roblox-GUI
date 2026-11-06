@@ -1,5 +1,5 @@
--- CodeBot V1 | Roblox Luau (Delta compatible)
--- The S: ATOM-style GUI + full ESP + Server-visible Orbit HVH
+-- CodeBot V2 | Roblox Luau (Delta / mobile compatible)
+-- The S: ATOM-style GUI + full ESP + Server-visible Orbit HVH + JJS Auto Block
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -24,6 +24,7 @@ getgenv().Config = {
 	HealthBarEnabled = true,
 	OrbitVisualEnabled = true,
 	LaserRaysEnabled = true,
+	TargetBoxEnabled = true,
 	ESPMaxDistance = 3000,
 
 	HVHEnabled = false,
@@ -40,6 +41,7 @@ getgenv().Config = {
 	DoorShowDistance = true,
 	InvisibleFarming = true,
 	DoorTravelSpeed = 400,
+	FlyHeight = 80,
 	OpenTimeout = 6,
 	KillFarmEnabled = false,
 	KillFarmRole = "Killer",
@@ -48,6 +50,7 @@ getgenv().Config = {
 	StableCamera = true,
 
 	AutoBlockEnabled = false,
+	MobileBlockButton = true,
 	OnlyLockedTarget = false,
 	OnlyBlockAngle = false,
 	ShowAngle = false,
@@ -812,6 +815,7 @@ xpcall(function() -- ESP
 	finish(a)
 
 	local b = section(p.left, "Target Visuals", 2, false, "◎")
+	addToggle(b, "Target Box + Name (HVH)", true, function(v) getgenv().Config.TargetBoxEnabled = v end)
 	addToggle(b, "Orbit Ring", true, function(v) getgenv().Config.OrbitVisualEnabled = v end)
 	addToggle(b, "Laser Rays", true, function(v) getgenv().Config.LaserRaysEnabled = v end)
 	finish(b)
@@ -823,7 +827,7 @@ xpcall(function() -- ESP
 	addColor(c, "Health Bar Color", Color3.fromRGB(0, 255, 0), function(v) getgenv().Config.HealthBarColor = v end)
 	addColor(c, "Orbit Ring Color", Color3.fromRGB(150, 0, 255), function(v) getgenv().Config.OrbitColor = v end)
 	addColor(c, "Laser Color", Color3.fromRGB(0, 150, 255), function(v) getgenv().Config.LaserColor = v end)
-	addColor(c, "Target Line Color", Color3.fromRGB(255, 0, 0), function(v) getgenv().Config.TargetLineColor = v end)
+	addColor(c, "Target Box / Line Color", Color3.fromRGB(255, 0, 0), function(v) getgenv().Config.TargetLineColor = v end)
 	finish(c)
 end, function(e) warn("The S: tab \"ESP\" failed: " .. tostring(e)) end)
 
@@ -837,6 +841,7 @@ xpcall(function() -- Halloween (Farm)
 	addToggle(a, "Auto Doors", false, function(v) getgenv().Config.AutoFarmDoors = v end)
 	addToggle(a, "Invisible While Farming", true, function(v) getgenv().Config.InvisibleFarming = v end)
 	addSlider(a, "Travel Speed", 100, 1000, 400, " st/s", function(v) getgenv().Config.DoorTravelSpeed = v end)
+	addSlider(a, "Fly Height", 10, 200, 80, " studs", function(v) getgenv().Config.FlyHeight = v end)
 	addSlider(a, "Open Timeout", 1, 20, 6, "s", function(v) getgenv().Config.OpenTimeout = v end)
 	finish(a)
 
@@ -869,12 +874,25 @@ xpcall(function() -- Combat & HVH
 		getgenv().Config.HVHEnabled = v
 		hvhTarget = nil
 	end)
-	addToggle(c, "Target Closest Player", true, function(v)
+	-- ON  = always orbit the closest ALIVE player (re-picks when the target dies)
+	-- OFF = orbit the player chosen below
+	UIRefs.setClosest = addToggle(c, "Target Closest Player (alive)", true, function(v)
 		getgenv().Config.TargetClosest = v
 		hvhTarget = nil
 	end)
-	addInput(c, "Target Player Name", "username or display name...", function(v)
+	addPlayerDropdown(c, "Pick Target Player", function(v)
+		if v == "None" then
+			getgenv().Config.TargetName = ""
+			if UIRefs.setClosest then UIRefs.setClosest(true) end
+		else
+			getgenv().Config.TargetName = v
+			if UIRefs.setClosest then UIRefs.setClosest(false) end
+		end
+		hvhTarget = nil
+	end)
+	addInput(c, "Or Type Player Name", "username or display name...", function(v)
 		getgenv().Config.TargetName = v
+		if v ~= "" and UIRefs.setClosest then UIRefs.setClosest(false) end
 		hvhTarget = nil
 	end)
 	addToggle(c, "Stable Camera (no shake)", true, function(v) getgenv().Config.StableCamera = v end)
@@ -895,7 +913,14 @@ xpcall(function() -- Auto Block (Combat)
 	local keys = { "F", "Q", "E", "R", "T", "G" }
 
 	local a = section(p.left, "Main · Block", 1, false, "◈")
-	UIRefs.setAutoBlock = addToggle(a, "Enabled", false, function(v) getgenv().Config.AutoBlockEnabled = v end)
+	UIRefs.setAutoBlock = addToggle(a, "Enabled", false, function(v)
+		getgenv().Config.AutoBlockEnabled = v
+		if UIRefs.refreshBlockBtn then UIRefs.refreshBlockBtn() end
+	end)
+	addToggle(a, "Mobile Toggle Button", true, function(v)
+		getgenv().Config.MobileBlockButton = v
+		if UIRefs.refreshBlockBtn then UIRefs.refreshBlockBtn() end
+	end)
 	addKeybind(a, "Enabled Key", function(code) getgenv().Config.AutoBlockKeyCode = code end)
 	addToggle(a, "Only Locked Target", false, function(v) getgenv().Config.OnlyLockedTarget = v end)
 	addToggle(a, "Only Block Angle", false, function(v) getgenv().Config.OnlyBlockAngle = v end)
@@ -1164,6 +1189,7 @@ local function pickTarget()
 	local cfg = getgenv().Config
 	local nameQ = string.lower(cfg.TargetName or "")
 	local best, bestDist
+	local partial
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p ~= player and p.Character then
 			local hrp = p.Character:FindFirstChild("HumanoidRootPart")
@@ -1174,17 +1200,22 @@ local function pickTarget()
 						if not bestDist or d < bestDist then best, bestDist = hrp, d end
 					end
 				elseif nameQ ~= "" then
-					if string.find(string.lower(p.Name), nameQ, 1, true) or string.find(string.lower(p.DisplayName), nameQ, 1, true) then
-						return hrp
+					local pn, dn = string.lower(p.Name), string.lower(p.DisplayName)
+					if pn == nameQ or dn == nameQ then
+						return hrp -- exact match wins
+					elseif not partial and (string.find(pn, nameQ, 1, true) or string.find(dn, nameQ, 1, true)) then
+						partial = hrp
 					end
 				end
 			end
 		end
 	end
-	return best
+	if cfg.TargetClosest then return best end
+	return partial
 end
 
--- while HVH is on the target stays locked until it dies/leaves
+-- while HVH is on the target stays locked until it dies/leaves, then the
+-- next closest alive player is picked (when "Target Closest" is on)
 local function getTargetRoot()
 	if getgenv().Config.HVHEnabled then
 		if not isValidRoot(hvhTarget) then
@@ -1197,11 +1228,11 @@ local function getTargetRoot()
 end
 
 ---------------------------------------------------------------------
--- TARGET VISUALS (orbit ring + laser rays + red target line)
+-- TARGET VISUALS (target box + name, orbit ring, laser rays, target line)
 ---------------------------------------------------------------------
 local ORBIT_SEGMENTS = 28
 local RAY_COUNT = 14
-local TargetVis = { Orbit = {}, Rays = {}, Line = nil }
+local TargetVis = { Orbit = {}, Rays = {}, Line = nil, Box = nil, Name = nil }
 
 local function initTargetVisuals()
 	for i = 1, ORBIT_SEGMENTS do
@@ -1211,12 +1242,16 @@ local function initTargetVisuals()
 		TargetVis.Rays[i] = newDrawing("Line", { Thickness = 1, Visible = false })
 	end
 	TargetVis.Line = newDrawing("Line", { Thickness = 1.5, Visible = false })
+	TargetVis.Box = newDrawing("Square", { Thickness = 2, Filled = false, Visible = false })
+	TargetVis.Name = newDrawing("Text", { Size = 18, Center = true, Outline = true, Font = Drawing.Fonts.UI, Visible = false })
 end
 
 local function hideTargetVisuals()
 	for _, l in ipairs(TargetVis.Orbit) do l.Visible = false end
 	for _, l in ipairs(TargetVis.Rays) do l.Visible = false end
 	if TargetVis.Line then TargetVis.Line.Visible = false end
+	if TargetVis.Box then TargetVis.Box.Visible = false end
+	if TargetVis.Name then TargetVis.Name.Visible = false end
 end
 
 local function renderTarget(cam, t)
@@ -1228,6 +1263,31 @@ local function renderTarget(cam, t)
 	local center = targetRoot.Position
 	local r = cfg.Radius
 	local centerScreen, centerOk = proj(cam, center)
+
+	-- box + name around the HVH target
+	local box, nameT = TargetVis.Box, TargetVis.Name
+	local boxShown = false
+	if cfg.HVHEnabled and cfg.TargetBoxEnabled then
+		local top, okTop = proj(cam, center + Vector3.new(0, 3, 0))
+		local bottom, okBot = proj(cam, center - Vector3.new(0, 3.5, 0))
+		if okTop and okBot then
+			local h = math.max(math.abs(bottom.Y - top.Y), 6)
+			local w = h * 0.6
+			box.Position = Vector2.new(top.X - w / 2, top.Y)
+			box.Size = Vector2.new(w, h)
+			box.Color = cfg.TargetLineColor
+			box.Visible = true
+			local tp = targetRoot.Parent and Players:GetPlayerFromCharacter(targetRoot.Parent)
+			local hum = targetRoot.Parent and targetRoot.Parent:FindFirstChildOfClass("Humanoid")
+			local nm = tp and tp.Name or (targetRoot.Parent and targetRoot.Parent.Name or "?")
+			nameT.Text = string.format("[TARGET] %s%s", nm, hum and string.format("  %d HP", math.floor(hum.Health)) or "")
+			nameT.Position = Vector2.new(top.X, top.Y - 24)
+			nameT.Color = cfg.TargetLineColor
+			nameT.Visible = true
+			boxShown = true
+		end
+	end
+	if not boxShown then box.Visible = false; nameT.Visible = false end
 
 	local pts = {}
 	for i = 1, ORBIT_SEGMENTS do
@@ -1391,7 +1451,7 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt)
 			wasOrbiting = true
 			Humanoid.AutoRotate = false
 
-			-- SpinSpeed = degrees per second (max 10000)
+			-- SpinSpeed = degrees per second
 			-- snap the frame time to a steady rate (60/45/30 fps...) so every frame turns
 			-- by exactly the same angle; raw dt noise is what made fast spins shake
 			local fps = math.clamp(5 * math.floor((1 / math.max(dt, 0.0001)) / 5 + 0.5), 10, 240)
@@ -1517,7 +1577,6 @@ local function setFarmStatus(text)
 	end
 end
 
-local PathfindingService = game:GetService("PathfindingService")
 local farmDoorBusy = false
 
 local function pickDoor()
@@ -1554,8 +1613,6 @@ local function doorFarmActive()
 		and HumanoidRootPart and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0
 end
 
-local function flat(v) return Vector3.new(v.X, 0, v.Z) end
-
 -- where the player actually has to stand: next to the prompt, not the door model's pivot
 local function interactPos(door, prompt)
 	if prompt then
@@ -1566,19 +1623,10 @@ local function interactPos(door, prompt)
 	return doorPos(door)
 end
 
-local function groundOffset()
-	local hrp = HumanoidRootPart
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { Character }
-	local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -25, 0), params)
-	if hit then return math.clamp(hrp.Position.Y - hit.Position.Y, 1.5, 6) end
-	return 3
-end
-
 -- slides the character to `goal` at the Travel Speed (studs/s). The step never exceeds the
 -- remaining distance, so even 1000 st/s cannot overshoot. Collision is switched off every
 -- frame while sliding so walls and props can't shove you off the route.
+-- `near` (optional) lets the slide stop early; otherwise it ends exactly on `goal`.
 local function glideTo(goal, near, deadline)
 	local hrp = HumanoidRootPart
 	if not Character then return false end
@@ -1589,7 +1637,7 @@ local function glideTo(goal, near, deadline)
 
 	local result = false
 	while doorFarmActive() do
-		if near() then result = true; break end
+		if near and near() then result = true; break end
 		if os.clock() > deadline then break end
 		local dt = math.min(RunService.Heartbeat:Wait(), 0.1)
 		if not doorFarmActive() then break end
@@ -1617,29 +1665,25 @@ local function glideTo(goal, near, deadline)
 	return result
 end
 
--- follows a pathfinding route to the door (or a straight line if no route exists)
+-- FLY route (no pathfinding, so walls/roofs/doors can never block it):
+--   1) rise straight up to Fly Height   2) fly level over the door   3) drop onto the prompt
 local function walkTo(targetPos, reach, timeout)
 	local deadline = os.clock() + timeout
-	local offset = groundOffset()
-	local function near() return (HumanoidRootPart.Position - targetPos).Magnitude <= reach end
+	local hrp = HumanoidRootPart
+	local function near() return (hrp.Position - targetPos).Magnitude <= reach end
 	if near() then return true end
 
-	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
-	local ok = pcall(function() path:ComputeAsync(HumanoidRootPart.Position - Vector3.new(0, offset, 0), targetPos) end)
+	local cfg = getgenv().Config
+	local cruiseY = math.max(hrp.Position.Y, targetPos.Y) + cfg.FlyHeight
 
-	if ok and path.Status == Enum.PathStatus.Success then
-		for _, wp in ipairs(path:GetWaypoints()) do
-			if near() then return true end
-			if not glideTo(wp.Position + Vector3.new(0, offset, 0), near, deadline) and not near() then
-				return false
-			end
-		end
-		-- route ended but still not close enough: finish with a straight slide
-		if not near() then glideTo(targetPos + Vector3.new(0, 0, 0), near, deadline) end
-	else
-		setFarmStatus("No path, sliding straight")
-		glideTo(targetPos, near, deadline)
-	end
+	setFarmStatus("Rising")
+	if not glideTo(Vector3.new(hrp.Position.X, cruiseY, hrp.Position.Z), nil, deadline) then return false end
+
+	setFarmStatus("Flying to door")
+	if not glideTo(Vector3.new(targetPos.X, cruiseY, targetPos.Z), nil, deadline) then return false end
+
+	setFarmStatus("Landing on door")
+	glideTo(targetPos, nil, deadline)
 	return near()
 end
 
@@ -1666,16 +1710,33 @@ local function doorLoopStep()
 	local reach = math.clamp((prompt and prompt.MaxActivationDistance or 10) - 3, 3, 12)
 	local target = interactPos(door, prompt)
 
-	setFarmStatus("Walking to door")
 	local arrived = walkTo(target, reach, 25) and doorFarmActive()
 
 	if arrived then
 		setFarmStatus("Opening door")
-		HumanoidRootPart.CFrame = CFrame.lookAt(HumanoidRootPart.Position, Vector3.new(target.X, HumanoidRootPart.Position.Y, target.Z))
-		local t0 = os.clock()
+		local hrp = HumanoidRootPart
+		-- freeze in place on the prompt (no falling) while it is triggered
+		local holdCF = hrp.CFrame
+		local flatDiff = Vector3.new(target.X - hrp.Position.X, 0, target.Z - hrp.Position.Z)
+		if flatDiff.Magnitude > 0.2 then
+			holdCF = CFrame.lookAt(hrp.Position, hrp.Position + flatDiff)
+		end
+		local parts = {}
+		for _, d in ipairs(Character:GetDescendants()) do
+			if d:IsA("BasePart") then parts[#parts + 1] = d end
+		end
+		local t0, lastPress = os.clock(), 0
 		while doorFarmActive() and door.Parent and isDoorReady(door) and os.clock() - t0 < cfg.OpenTimeout do
-			if prompt and prompt.Parent then pressPrompt(prompt) end
-			task.wait(0.4)
+			hrp.CFrame = holdCF
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+			for _, part in ipairs(parts) do part.CanCollide = false end
+			local now = os.clock()
+			if prompt and prompt.Parent and now - lastPress > 0.4 then
+				lastPress = now
+				task.spawn(pressPrompt, prompt)
+			end
+			RunService.Heartbeat:Wait()
 		end
 	else
 		setFarmStatus("Door unreachable, next")
@@ -1802,7 +1863,7 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt)
 end))
 
 ---------------------------------------------------------------------
--- AUTO BLOCK + PUNISH
+-- AUTO BLOCK + PUNISH (Jujutsu Shenanigans style: F block, Q dash, M1)
 ---------------------------------------------------------------------
 local VIM = nil
 pcall(function() VIM = game:GetService("VirtualInputManager") end)
@@ -1987,7 +2048,6 @@ local function renderAngle(cam)
 		local a = -half + (2 * half) * (i / ANGLE_SEG)
 		pts[i + 1] = origin + (base * CFrame.Angles(0, a, 0)).LookVector * cfg.BlockRange
 	end
-	local o, oOk = proj(cam, origin)
 	local lines = {}
 	for i = 1, ANGLE_SEG do lines[i] = { pts[i], pts[i + 1] } end
 	lines[ANGLE_SEG + 1] = { origin, pts[1] }
@@ -2142,10 +2202,10 @@ table.insert(connections, RunService.RenderStepped:Connect(function()
 		for doorObj, objs in pairs(DoorESPObjects) do
 			if doorObj and doorObj.Parent then
 				if cfg.DoorESPEnabled then
-					local doorPos = doorObj:IsA("Model") and doorObj:GetPivot().Position or doorObj.Position
-					local pos, ok = proj(cam, doorPos)
+					local dPos = doorObj:IsA("Model") and doorObj:GetPivot().Position or doorObj.Position
+					local pos, ok = proj(cam, dPos)
 					if ok then
-						local dist = math.floor((cam.CFrame.Position - doorPos).Magnitude)
+						local dist = math.floor((cam.CFrame.Position - dPos).Magnitude)
 						local timerStr = getDoorTimerText(doorObj)
 						local status = (timerStr and timerStr ~= "0:00") and timerStr or "Ready!"
 						objs.Box.Size = Vector2.new(30, 45)
@@ -2238,7 +2298,7 @@ task.spawn(function()
 end)
 
 ---------------------------------------------------------------------
--- MINIMIZE / CLOSE
+-- MINIMIZE / CLOSE + MOBILE BLOCK BUTTON
 ---------------------------------------------------------------------
 -- small floating logo shown while the window is minimized (tap = restore, drag = move)
 local logoBtn = create("TextButton", {
@@ -2266,12 +2326,13 @@ local function showMain(v)
 	logoBtn.Visible = not v
 end
 
-do
+-- tap = onTap, drag = move the button
+local function makeTapDrag(btn, onTap)
 	local dragging, moved, dragStart, startPos = false, false, nil, nil
-	logoBtn.InputBegan:Connect(function(input)
+	btn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging, moved = true, false
-			dragStart, startPos = input.Position, logoBtn.Position
+			dragStart, startPos = input.Position, btn.Position
 		end
 	end)
 	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
@@ -2279,17 +2340,42 @@ do
 			local delta = input.Position - dragStart
 			if delta.Magnitude > 8 then moved = true end
 			if moved then
-				logoBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+				btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 			end
 		end
 	end))
 	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 			dragging = false
-			if not moved then showMain(true) end
+			if not moved then onTap() end
 		end
 	end))
 end
+
+makeTapDrag(logoBtn, function() showMain(true) end)
+
+-- floating Auto Block ON/OFF button for phones (no keyboard needed)
+local blockBtn = create("TextButton", {
+	Name = "BlockBtn", Text = "BLOCK: OFF", TextSize = 18, Font = F.Bold, TextColor3 = C.White,
+	Size = UDim2.fromOffset(130, 56), AnchorPoint = Vector2.new(1, 0.5),
+	Position = UDim2.new(1, -20, 0.4, 0),
+	BackgroundColor3 = C.Window, BorderSizePixel = 0, AutoButtonColor = false,
+	Visible = getgenv().Config.MobileBlockButton,
+}, screenGui)
+corner(blockBtn, 16)
+local blockStroke = stroke(blockBtn, Color3.fromRGB(120, 122, 135), 2)
+
+UIRefs.refreshBlockBtn = function()
+	local cfg = getgenv().Config
+	blockBtn.Visible = cfg.MobileBlockButton
+	blockBtn.Text = cfg.AutoBlockEnabled and "BLOCK: ON" or "BLOCK: OFF"
+	blockBtn.TextColor3 = cfg.AutoBlockEnabled and Color3.fromRGB(0, 255, 120) or C.White
+	blockStroke.Color = cfg.AutoBlockEnabled and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(120, 122, 135)
+end
+makeTapDrag(blockBtn, function()
+	if UIRefs.setAutoBlock then UIRefs.setAutoBlock(not getgenv().Config.AutoBlockEnabled) end
+end)
+UIRefs.refreshBlockBtn()
 
 minBtn.MouseButton1Click:Connect(function() showMain(false) end)
 
@@ -2299,6 +2385,7 @@ local function cleanup()
 	getgenv().Config.HVHEnabled = false
 	getgenv().Config.AutoFarmDoors = false
 	getgenv().Config.KillFarmEnabled = false
+	getgenv().Config.AutoBlockEnabled = false
 	setFarmInvisible(false)
 	if Humanoid then Humanoid.AutoRotate = true end
 	local cam = workspace.CurrentCamera
@@ -2317,4 +2404,4 @@ end
 getgenv().TheS_Cleanup = cleanup
 closeBtn.MouseButton1Click:Connect(cleanup)
 
-print("CodeBot V1: The S GUI loaded with ESP + Orbit HVH!")
+print("CodeBot V2: The S GUI loaded (JJS mobile build)")
