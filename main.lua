@@ -14,7 +14,7 @@ if getgenv().TheS_Cleanup then pcall(getgenv().TheS_Cleanup) end
 
 if not Drawing then
 	warn("CodeBot: your executor has no Drawing library, ESP will not render.")
-endUDim2
+end
 
 getgenv().Config = {
 	ESPEnabled = true,
@@ -196,17 +196,19 @@ local function loadAvatar(img)
 	end)
 end
 
+local screenGui, main, minBtn, closeBtn
+do -- build the window
 local old = guiParent:FindFirstChild("TheS_Gui")
 if old then old:Destroy() end
 
-local screenGui = create("ScreenGui", {
+screenGui = create("ScreenGui", {
 	Name = "TheS_Gui",
 	ResetOnSpawn = false,
 	IgnoreGuiInset = true,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, guiParent)
 
-local main = create("Frame", {
+main = create("Frame", {
 	Name = "Main",
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5),
@@ -297,7 +299,7 @@ pName.Size = UDim2.new(1, -130, 0, 32)
 table.insert(hideables, { label = pName, real = player.Name, hidden = "Hidden" })
 
 local pGame = txt(profileBar, "Roblox", 20, C.SubText, F.Reg)
-pGame.Position = .new(0, 114, 0.5, 18)
+pGame.Position = UDim2.new(0, 114, 0.5, 18)
 pGame.Size = UDim2.new(1, -130, 0, 28)
 task.spawn(function()
 	local ok, info = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId) end)
@@ -353,10 +355,10 @@ local searchBox = create("TextBox", {
 	TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false,
 }, search)
 
-local minBtn = create("TextButton", { Size = UDim2.fromOffset(62, 62), Position = UDim2.new(0, CONTENT_W - 24 - 62 - 10 - 62, 0, 32), BackgroundTransparency = 1, Text = "" }, header)
+minBtn = create("TextButton", { Size = UDim2.fromOffset(62, 62), Position = UDim2.new(0, CONTENT_W - 24 - 62 - 10 - 62, 0, 32), BackgroundTransparency = 1, Text = "" }, header)
 create("Frame", { Size = UDim2.new(0, 24, 0, 3), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), BackgroundColor3 = C.BarLight, BorderSizePixel = 0 }, minBtn)
 
-local closeBtn = create("TextButton", { Size = UDim2.fromOffset(62, 62), Position = UDim2.new(0, CONTENT_W - 24 - 62, 0, 32), BackgroundTransparency = 1, Text = "" }, header)
+closeBtn = create("TextButton", { Size = UDim2.fromOffset(62, 62), Position = UDim2.new(0, CONTENT_W - 24 - 62, 0, 32), BackgroundTransparency = 1, Text = "" }, header)
 for _, rot in ipairs({ 45, -45 }) do
 	create("Frame", { Size = UDim2.new(0, 30, 0, 3), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Rotation = rot, BackgroundColor3 = C.White, BorderSizePixel = 0 }, closeBtn)
 end
@@ -741,7 +743,7 @@ end
 ---------------------------------------------------------------------
 -- TABS
 ---------------------------------------------------------------------
-do -- Home
+xpcall(function() -- Home
 	local p = newPage("Home")
 
 	local a = section(p.left, "Overview", 1, false, "⌂")
@@ -795,9 +797,9 @@ do -- Home
 		end
 	end)
 	finish(b)
-end
+end, function(e) warn("The S: tab \"Home\" failed: " .. tostring(e)) end)
 
-do -- ESP
+xpcall(function() -- ESP
 	local p = newPage("ESP")
 
 	local a = section(p.left, "Player ESP", 1, false, "◎")
@@ -823,9 +825,9 @@ do -- ESP
 	addColor(c, "Laser Color", Color3.fromRGB(0, 150, 255), function(v) getgenv().Config.LaserColor = v end)
 	addColor(c, "Target Line Color", Color3.fromRGB(255, 0, 0), function(v) getgenv().Config.TargetLineColor = v end)
 	finish(c)
-end
+end, function(e) warn("The S: tab \"ESP\" failed: " .. tostring(e)) end)
 
-do -- Halloween (Farm)
+xpcall(function() -- Halloween (Farm)
 	local p = newPage("Halloween")
 
 	local a = section(p.left, "Auto Doors", 1, false, "✧")
@@ -857,9 +859,9 @@ do -- Halloween (Farm)
 	local kl = section(p.right, "Killer", 2, false, "✧")
 	addToggle(kl, "Kill Aura Skeletons", false, function(v) getgenv().Config.KillAuraSkeletons = v end)
 	finish(kl)
-end
+end, function(e) warn("The S: tab \"Halloween (Farm)\" failed: " .. tostring(e)) end)
 
-do -- Combat & HVH
+xpcall(function() -- Combat & HVH
 	local p = newPage("Combat & HVH")
 
 	local c = section(p.left, "HVH Target", 1, false, "◆")
@@ -886,9 +888,9 @@ do -- Combat & HVH
 	addToggle(m, "Infinite Jump", false, function(v) getgenv().Config.InfJumpEnabled = v end)
 	addToggle(m, "Noclip", false, function(v) getgenv().Config.NoclipEnabled = v end)
 	finish(m)
-end
+end, function(e) warn("The S: tab \"Combat & HVH\" failed: " .. tostring(e)) end)
 
-do -- Auto Block (Combat)
+xpcall(function() -- Auto Block (Combat)
 	local p = newPage("Auto Block")
 	local keys = { "F", "Q", "E", "R", "T", "G" }
 
@@ -919,9 +921,9 @@ do -- Auto Block (Combat)
 	addSlider(d, "M1 Catch Range", 5, 60, 30, " studs", function(v) getgenv().Config.M1CatchRange = v end)
 	addDropdown(d, "Dash Key", keys, "Q", function(v) getgenv().Config.DashKey = v end)
 	finish(d)
-end
+end, function(e) warn("The S: tab \"Auto Block (Combat)\" failed: " .. tostring(e)) end)
 
-do -- Avatar (Visuals)
+xpcall(function() -- Avatar (Visuals)
 	local p = newPage("Avatar")
 	local a = section(p.left, "Avatar", 1, false, "◍")
 	addButton(a, "Scramble Avatar", function(btn) Actions.scramble(btn) end)
@@ -930,9 +932,9 @@ do -- Avatar (Visuals)
 	addButton(a, "Copy Avatar", function(btn) Actions.copyAvatar(btn, targetBox.Text) end)
 	addButton(a, "Restore Avatar", function(btn) Actions.restore(btn) end)
 	finish(a)
-end
+end, function(e) warn("The S: tab \"Avatar (Visuals)\" failed: " .. tostring(e)) end)
 
-do -- Colors
+xpcall(function() -- Colors
 	local p = newPage("Colors")
 	local cl = section(p.left, "Theme Colors", 1, false, "◐")
 	addColor(cl, "Highlight Color", Color3.fromRGB(0, 255, 120), function(v) getgenv().Config.HighlightColor = v end)
@@ -940,7 +942,7 @@ do -- Colors
 	addColor(cl, "Door Color", Color3.fromRGB(255, 200, 0), function(v) getgenv().Config.DoorColor = v end)
 	addColor(cl, "Skeleton Color", Color3.fromRGB(255, 0, 0), function(v) getgenv().Config.SkeletonColor = v end)
 	finish(cl)
-end
+end, function(e) warn("The S: tab \"Colors\" failed: " .. tostring(e)) end)
 
 ---------------------------------------------------------------------
 -- SIDEBAR ENTRIES
@@ -1014,6 +1016,8 @@ addCategory("Combat", { { "Auto Block", "◈" }, { "Combat & HVH", "◆" } })
 addCategory("Settings", { { "Colors", "◐" } })
 
 selectPage("Home")
+end -- window built
+print("The S: GUI built")
 
 ---------------------------------------------------------------------
 -- DRAWING HELPERS
