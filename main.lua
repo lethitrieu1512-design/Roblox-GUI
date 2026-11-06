@@ -1740,59 +1740,169 @@ local function flyTo(targetPos, reach, timeout)
 	return near()
 end
 
--- WALK route: the real humanoid walks (pathfinding around walls, jumping when stuck)
-local function walkRoute(goal, reach, deadline)
-	local hrp, hum = HumanoidRootPart, Humanoid
-	if not hrp or not hum then return false end
-	local function near() return (hrp.Position - goal).Magnitude <= reach end
+-- WALK route: the real humanoid walks. It picks a spot to stand IN FRONT of the door that has
+-- a real path, follows it, and when stuck it escalates: jump -> side-step -> fresh path ->
+-- short hop over the obstacle -> next stand spot -> straight walk (walkTo then flies over).
+local DoorNav = { door = nil }
 
-	-- walks to `pos`; false when it stops making progress or runs out of time
-	local function moveTo(pos, wpReach, maxT)
-		local t0 = os.clock()
-		local lastPos, lastCheck, stuck = hrp.Position, t0, 0
-		while doorFarmActive() and os.clock() < deadline and os.clock() - t0 < maxT do
-			useDoorSpeed()
-			hum:MoveTo(pos)
-			if near() or (hrp.Position - pos).Magnitude <= wpReach then return true end
-			local now = os.clock()
-			if now - lastCheck >= 0.4 then
-				if (hrp.Position - lastPos).Magnitude < 1.2 then
-					stuck = stuck + 1
-					hum.Jump = true
-					if stuck >= 4 then return false end
-				else
-					stuck = 0
-				end
-				lastPos, lastCheck = hrp.Position, now
-			end
-			RunService.Heartbeat:Wait()
-		end
-		return near()
-	end
-
-	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentCanClimb = true })
-	local okPath = pcall(function() path:ComputeAsync(hrp.Position, goal) end)
-	if okPath and path.Status == Enum.PathStatus.Success then
-		for _, wp in ipairs(path:GetWaypoints()) do
-			if not doorFarmActive() or os.clock() > deadline then break end
-			if wp.Action == Enum.PathWaypointAction.Jump then hum.Jump = true end
-			if not moveTo(wp.Position, 5, 2.5) then break end
-			if near() then return true end
-		end
-		if near() then return true end
-	end
-
-	-- no path (or it got blocked): walk straight at the door
-	if doorFarmActive() and moveTo(goal, reach, 5) then return true end
-	return near()
+local function doorTaken()
+	local d = DoorNav.door
+	return d ~= nil and d.Parent ~= nil and not isDoorReady(d)
 end
 
-local function walkTo(targetPos, reach, timeout)
+function DoorNav.groundBelow(pos)
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.FilterDescendantsInstances = { Character }
+	local r = workspace:Raycast(pos + Vector3.new(0, 2, 0), Vector3.new(0, -24, 0), rp)
+	return r and r.Position or nil
+end
+
+-- spots around the door where a player could stand, nearest to you first
+function DoorNav.spots(goal)
+	local list = {}
+	for _, radius in ipairs({ 4, 6.5 }) do
+		for i = 0, 7 do
+			local a = i * math.pi / 4
+			local g = DoorNav.groundBelow(goal + Vector3.new(math.cos(a) * radius, 0, math.sin(a) * radius))
+			if g and math.abs(g.Y - goal.Y) < 10 then
+				list[#list + 1] = { pos = g + Vector3.new(0, 1, 0), d = (g - HumanoidRootPart.Position).Magnitude }
+			end
+		end
+	end
+	table.sort(list, function(x, y) return x.d < y.d end)
+	return list
+end
+
+function DoorNav.compute(from, to)
+	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentCanClimb = true, WaypointSpacing = 6 })
+	local ok = pcall(function() path:ComputeAsync(from, to) end)
+	if ok and path.Status == Enum.PathStatus.Success then return path end
+	return nil
+end
+
+function DoorNav.follow(path, spot, goal, reach, deadline)
+	local hrp, hum = HumanoidRootPart, Humanoid
+	local function near() return (hrp.Position - goal).Magnitude <= reach end
+	local blocked = false
+	local conn = path.Blocked:Connect(function() blocked = true end)
+	local wps = path:GetWaypoints()
+	local i, best, lastProgress, stuck, recomputes = 2, math.huge, os.clock(), 0, 0
+	local result = false
+
+	while doorFarmActive() and os.clock() < deadline do
+		if near() then result = true; break end
+		if doorTaken() then break end
+		local wp = wps[i]
+		if not wp then result = near(); break end
+
+		useDoorSpeed()
+		if hum.Sit then hum.Sit = false end
+		if wp.Action == Enum.PathWaypointAction.Jump then hum.Jump = true end
+		hum:MoveTo(wp.Position)
+
+		local dx, dz = hrp.Position.X - wp.Position.X, hrp.Position.Z - wp.Position.Z
+		local flat = math.sqrt(dx * dx + dz * dz)
+		local now = os.clock()
+		if flat <= 3.5 then
+			i = i + 1
+			best, lastProgress, stuck = math.huge, now, 0
+		else
+			if flat < best - 0.8 then best, lastProgress = flat, now end
+			local needFresh = blocked
+			if now - lastProgress > 0.5 then
+				stuck = stuck + 1
+				lastProgress, best = now, math.huge
+				if stuck == 1 then
+					hum.Jump = true
+				elseif stuck == 2 then
+					local dir = wp.Position - hrp.Position
+					local side = Vector3.new(-dir.Z, 0, dir.X)
+					if side.Magnitude > 0.1 then
+						hum:MoveTo(hrp.Position + side.Unit * 6 * (math.random() < 0.5 and 1 or -1))
+						task.wait(0.35)
+					end
+				elseif stuck == 3 then
+					needFresh = true
+				elseif stuck == 4 then
+					local dir = Vector3.new(-dx, 0, -dz)
+					if dir.Magnitude > 0.1 then
+						hrp.CFrame = hrp.CFrame + dir.Unit * math.min(7, dir.Magnitude) + Vector3.new(0, 3, 0)
+					end
+				else
+					break -- give up on this stand spot
+				end
+			end
+			if needFresh then
+				blocked = false
+				recomputes = recomputes + 1
+				if recomputes > 4 then break end
+				local np = DoorNav.compute(hrp.Position, spot)
+				if not np then break end
+				conn:Disconnect()
+				path = np
+				conn = path.Blocked:Connect(function() blocked = true end)
+				wps = path:GetWaypoints()
+				i, best, lastProgress, stuck = 2, math.huge, os.clock(), 0
+			end
+		end
+		RunService.Heartbeat:Wait()
+	end
+	conn:Disconnect()
+	return result
+end
+
+-- no usable path: walk straight at the door, jumping when blocked
+function DoorNav.straight(goal, reach, deadline)
+	local hrp, hum = HumanoidRootPart, Humanoid
+	local t0 = os.clock()
+	local best, lastProgress = math.huge, t0
+	while doorFarmActive() and os.clock() < deadline and os.clock() - t0 < 6 do
+		useDoorSpeed()
+		hum:MoveTo(goal)
+		local d = (hrp.Position - goal).Magnitude
+		if d <= reach then return true end
+		local now = os.clock()
+		if d < best - 0.8 then
+			best, lastProgress = d, now
+		elseif now - lastProgress > 0.6 then
+			hum.Jump = true
+			if now - lastProgress > 1.5 then return false end
+		end
+		RunService.Heartbeat:Wait()
+	end
+	return (hrp.Position - goal).Magnitude <= reach
+end
+
+function DoorNav.walk(goal, reach, deadline)
+	local hrp = HumanoidRootPart
+	if not hrp or not Humanoid then return false end
+	if (hrp.Position - goal).Magnitude <= reach then return true end
+	local attempts, followed = 0, 0
+	for _, sp in ipairs(DoorNav.spots(goal)) do
+		if not doorFarmActive() or os.clock() > deadline or attempts >= 8 or followed >= 3 then break end
+		if doorTaken() then return false end
+		attempts = attempts + 1
+		local path = DoorNav.compute(hrp.Position, sp.pos)
+		if path then
+			followed = followed + 1
+			if DoorNav.follow(path, sp.pos, goal, reach, deadline) then return true end
+		end
+	end
+	if doorFarmActive() and os.clock() < deadline and not doorTaken() then
+		return DoorNav.straight(goal, reach, deadline)
+	end
+	return false
+end
+
+local function walkTo(targetPos, reach, timeout, door)
 	local hrp = HumanoidRootPart
 	if (hrp.Position - targetPos).Magnitude <= reach then return true end
 	local deadline = os.clock() + timeout
-	setFarmStatus("Walking to door")
-	if walkRoute(targetPos, reach, deadline) then return true end
+	DoorNav.door = door
+	setFarmStatus(string.format("Walking to door (%dm)", math.floor((targetPos - hrp.Position).Magnitude)))
+	if DoorNav.walk(targetPos, reach, deadline) then return true end
+	if doorTaken() then return false end
 	if not doorFarmActive() then return false end
 	-- walking was blocked: fly over instead so the door still gets opened
 	setFarmStatus("Blocked, flying over")
@@ -1822,7 +1932,7 @@ local function doorLoopStep()
 	local reach = math.clamp((prompt and prompt.MaxActivationDistance or 10) - 3, 3, 12)
 	local target = interactPos(door, prompt)
 
-	local arrived = walkTo(target, reach, 25) and doorFarmActive()
+	local arrived = walkTo(target, reach, 35, door) and doorFarmActive()
 
 	if arrived then
 		setFarmStatus("Opening door")
