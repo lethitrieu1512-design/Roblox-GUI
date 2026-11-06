@@ -1,13 +1,17 @@
 -- CodeBot V2 | Roblox Luau (Delta / mobile compatible)
--- The S: ATOM-style GUI + full ESP + Server-visible Orbit HVH + JJS Auto Block
+-- The S: ATOM-style GUI + ESP + Orbit HVH + Auto Block + Halloween farm
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local PathfindingService = game:GetService("PathfindingService")
 local StatsService = game:GetService("Stats")
 local player = Players.LocalPlayer
+
+-- how fast the window / floating buttons follow your finger (1 = same speed as the finger)
+local DRAG_SPEED = 0.7
 
 -- stop any previous copy of this script before starting a new one
 if getgenv().TheS_Cleanup then pcall(getgenv().TheS_Cleanup) end
@@ -40,7 +44,7 @@ getgenv().Config = {
 	KillAuraSkeletons = false,
 	DoorShowDistance = true,
 	InvisibleFarming = true,
-	DoorTravelSpeed = 400,
+	DoorTravelSpeed = 200,
 	FlyHeight = 80,
 	OpenTimeout = 6,
 	KillFarmEnabled = false,
@@ -69,7 +73,7 @@ getgenv().Config = {
 	PlayerHighlightEnabled = true,
 
 	SpeedHackEnabled = false,
-	WalkSpeedValue = 32,
+	WalkSpeedValue = 200,
 	InfJumpEnabled = false,
 	NoclipEnabled = false,
 
@@ -233,21 +237,27 @@ end
 updateScale()
 table.insert(connections, screenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateScale))
 
--- Dragging helper
+-- Dragging helper: the window moves DRAG_SPEED x your finger movement, eased so it glides
 local function makeDraggable(handle)
 	local dragging = false
-	local dragStart, startPos
+	local dragStart, startPos, goal
 	handle.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			dragStart = input.Position
 			startPos = main.Position
+			goal = startPos
 		end
 	end)
 	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-			local delta = (input.Position - dragStart) / uiScale.Scale
-			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+			local delta = (input.Position - dragStart) * DRAG_SPEED / uiScale.Scale
+			goal = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end))
+	table.insert(connections, RunService.RenderStepped:Connect(function()
+		if dragging and goal then
+			main.Position = main.Position:Lerp(goal, 0.35)
 		end
 	end))
 	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
@@ -840,7 +850,7 @@ xpcall(function() -- Halloween (Farm)
 	addColor(a, "ESP Colour", Color3.fromRGB(255, 200, 0), function(v) getgenv().Config.DoorColor = v end)
 	addToggle(a, "Auto Doors", false, function(v) getgenv().Config.AutoFarmDoors = v end)
 	addToggle(a, "Invisible While Farming", true, function(v) getgenv().Config.InvisibleFarming = v end)
-	addSlider(a, "Travel Speed", 100, 1000, 400, " st/s", function(v) getgenv().Config.DoorTravelSpeed = v end)
+	addSlider(a, "Walk Speed To Door", 16, 400, 200, " st/s", function(v) getgenv().Config.DoorTravelSpeed = v end)
 	addSlider(a, "Fly Height", 10, 200, 80, " studs", function(v) getgenv().Config.FlyHeight = v end)
 	addSlider(a, "Open Timeout", 1, 20, 6, "s", function(v) getgenv().Config.OpenTimeout = v end)
 	finish(a)
@@ -902,7 +912,7 @@ xpcall(function() -- Combat & HVH
 
 	local m = section(p.right, "Movement & Utility", 1, false, "◆")
 	addToggle(m, "Speed Hack", false, function(v) getgenv().Config.SpeedHackEnabled = v end)
-	addSlider(m, "Walk Speed", 16, 150, 32, "", function(v) getgenv().Config.WalkSpeedValue = v end)
+	addSlider(m, "Walk Speed", 16, 300, 200, "", function(v) getgenv().Config.WalkSpeedValue = v end)
 	addToggle(m, "Infinite Jump", false, function(v) getgenv().Config.InfJumpEnabled = v end)
 	addToggle(m, "Noclip", false, function(v) getgenv().Config.NoclipEnabled = v end)
 	finish(m)
@@ -1214,12 +1224,25 @@ local function pickTarget()
 	return partial
 end
 
--- while HVH is on the target stays locked until it dies/leaves, then the
--- next closest alive player is picked (when "Target Closest" is on)
+-- while HVH is on, the target stays locked until it dies/leaves. With "Target Closest"
+-- on, it is re-checked 5x per second and switches to whoever is NEAREST to you
+-- (a new player must be 1.5 studs nearer, so two equal distances don't flip-flop)
+local lastRepick = 0
 local function getTargetRoot()
-	if getgenv().Config.HVHEnabled then
+	local cfg = getgenv().Config
+	if cfg.HVHEnabled then
+		local now = os.clock()
 		if not isValidRoot(hvhTarget) then
 			hvhTarget = pickTarget()
+			lastRepick = now
+		elseif cfg.TargetClosest and HumanoidRootPart and now - lastRepick > 0.2 then
+			lastRepick = now
+			local best = pickTarget()
+			if best and best ~= hvhTarget then
+				local dBest = (HumanoidRootPart.Position - best.Position).Magnitude
+				local dCur = (HumanoidRootPart.Position - hvhTarget.Position).Magnitude
+				if dBest + 1.5 < dCur then hvhTarget = best end
+			end
 		end
 		return hvhTarget
 	end
@@ -1593,17 +1616,34 @@ local function pickDoor()
 	return best
 end
 
--- opens the door like a player: prompt trigger, or a held "E" key macro as fallback
+-- a door counts as opened once its prompt is gone/disabled or its cooldown timer shows
+local function doorOpened(door, prompt)
+	if prompt and (not prompt.Parent or not prompt.Enabled) then return true end
+	return not isDoorReady(door)
+end
+
+-- opens the door like a player: fire the prompt, then hold/tap the interact key as backup
 local function pressPrompt(prompt)
+	pcall(function() prompt.HoldDuration = 0 end)
+	pcall(function() prompt.RequiresLineOfSight = false end)
+	local fired = false
 	if fireproximityprompt then
-		pcall(fireproximityprompt, prompt)
-		return
+		fired = pcall(fireproximityprompt, prompt)
 	end
+	if not fired then
+		pcall(function() prompt:InputHoldBegin() end)
+		task.wait(0.1)
+		pcall(function() prompt:InputHoldEnd() end)
+	end
+	task.wait(0.15)
+	if not prompt.Parent or not prompt.Enabled then return end -- it worked
 	pcall(function()
 		local vim = game:GetService("VirtualInputManager")
-		vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+		local key = prompt.KeyboardKeyCode
+		if not key or key == Enum.KeyCode.Unknown then key = Enum.KeyCode.E end
+		vim:SendKeyEvent(true, key, false, game)
 		task.wait(math.max(prompt.HoldDuration, 0) + 0.1)
-		vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+		vim:SendKeyEvent(false, key, false, game)
 	end)
 end
 
@@ -1665,9 +1705,22 @@ local function glideTo(goal, near, deadline)
 	return result
 end
 
--- FLY route (no pathfinding, so walls/roofs/doors can never block it):
+-- Walk speed is raised to "Walk Speed To Door" only while walking, then put back
+local origWalkSpeed = nil
+local function useDoorSpeed()
+	if Humanoid then
+		if not origWalkSpeed then origWalkSpeed = Humanoid.WalkSpeed end
+		Humanoid.WalkSpeed = getgenv().Config.DoorTravelSpeed
+	end
+end
+local function restoreDoorSpeed()
+	if origWalkSpeed and Humanoid then Humanoid.WalkSpeed = origWalkSpeed end
+	origWalkSpeed = nil
+end
+
+-- FLY route (backup when walking is blocked; no pathfinding, so walls can't stop it):
 --   1) rise straight up to Fly Height   2) fly level over the door   3) drop onto the prompt
-local function walkTo(targetPos, reach, timeout)
+local function flyTo(targetPos, reach, timeout)
 	local deadline = os.clock() + timeout
 	local hrp = HumanoidRootPart
 	local function near() return (hrp.Position - targetPos).Magnitude <= reach end
@@ -1687,10 +1740,69 @@ local function walkTo(targetPos, reach, timeout)
 	return near()
 end
 
-local origWalkSpeed = nil -- kept for cleanup (walk speed is no longer changed)
+-- WALK route: the real humanoid walks (pathfinding around walls, jumping when stuck)
+local function walkRoute(goal, reach, deadline)
+	local hrp, hum = HumanoidRootPart, Humanoid
+	if not hrp or not hum then return false end
+	local function near() return (hrp.Position - goal).Magnitude <= reach end
+
+	-- walks to `pos`; false when it stops making progress or runs out of time
+	local function moveTo(pos, wpReach, maxT)
+		local t0 = os.clock()
+		local lastPos, lastCheck, stuck = hrp.Position, t0, 0
+		while doorFarmActive() and os.clock() < deadline and os.clock() - t0 < maxT do
+			useDoorSpeed()
+			hum:MoveTo(pos)
+			if near() or (hrp.Position - pos).Magnitude <= wpReach then return true end
+			local now = os.clock()
+			if now - lastCheck >= 0.4 then
+				if (hrp.Position - lastPos).Magnitude < 1.2 then
+					stuck = stuck + 1
+					hum.Jump = true
+					if stuck >= 4 then return false end
+				else
+					stuck = 0
+				end
+				lastPos, lastCheck = hrp.Position, now
+			end
+			RunService.Heartbeat:Wait()
+		end
+		return near()
+	end
+
+	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentCanClimb = true })
+	local okPath = pcall(function() path:ComputeAsync(hrp.Position, goal) end)
+	if okPath and path.Status == Enum.PathStatus.Success then
+		for _, wp in ipairs(path:GetWaypoints()) do
+			if not doorFarmActive() or os.clock() > deadline then break end
+			if wp.Action == Enum.PathWaypointAction.Jump then hum.Jump = true end
+			if not moveTo(wp.Position, 5, 2.5) then break end
+			if near() then return true end
+		end
+		if near() then return true end
+	end
+
+	-- no path (or it got blocked): walk straight at the door
+	if doorFarmActive() and moveTo(goal, reach, 5) then return true end
+	return near()
+end
+
+local function walkTo(targetPos, reach, timeout)
+	local hrp = HumanoidRootPart
+	if (hrp.Position - targetPos).Magnitude <= reach then return true end
+	local deadline = os.clock() + timeout
+	setFarmStatus("Walking to door")
+	if walkRoute(targetPos, reach, deadline) then return true end
+	if not doorFarmActive() then return false end
+	-- walking was blocked: fly over instead so the door still gets opened
+	setFarmStatus("Blocked, flying over")
+	return flyTo(targetPos, reach, 15)
+end
+
 local function doorLoopStep()
 	local cfg = getgenv().Config
 	if not doorFarmActive() then
+		restoreDoorSpeed()
 		farmDoorBusy = false
 		task.wait(0.3)
 		return
@@ -1726,7 +1838,7 @@ local function doorLoopStep()
 			if d:IsA("BasePart") then parts[#parts + 1] = d end
 		end
 		local t0, lastPress = os.clock(), 0
-		while doorFarmActive() and door.Parent and isDoorReady(door) and os.clock() - t0 < cfg.OpenTimeout do
+		while doorFarmActive() and door.Parent and not doorOpened(door, prompt) and os.clock() - t0 < cfg.OpenTimeout do
 			hrp.CFrame = holdCF
 			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.AssemblyAngularVelocity = Vector3.zero
@@ -1742,6 +1854,7 @@ local function doorLoopStep()
 		setFarmStatus("Door unreachable, next")
 	end
 	-- a failed door is retried after 10s, an opened one after 30s
+	restoreDoorSpeed()
 	farmState.visited[door] = os.clock() - (arrived and 0 or 20)
 end
 
@@ -2068,30 +2181,15 @@ local function renderAngle(cam)
 end
 
 ---------------------------------------------------------------------
--- AVATAR (client-side visual copy)
+-- AVATAR (client-side copy: swaps clothes, accessories, body colours and face)
 ---------------------------------------------------------------------
-local originalDesc = nil
-
-local function applyDesc(desc)
-	if not desc or not Humanoid then return false end
-	if not originalDesc then
-		local okd, d = pcall(function() return Humanoid:GetAppliedDescription() end)
-		if okd then originalDesc = d end
-	end
-	return (pcall(function() Humanoid:ApplyDescription(desc) end))
-end
+local Avatar = { backup = nil }
 
 local function flash(btn, msg, orig)
 	btn.Text = msg
 	task.delay(1.4, function()
 		if btn.Parent then btn.Text = orig end
 	end)
-end
-
-local function descFromUserId(uid)
-	local ok, desc = pcall(function() return Players:GetHumanoidDescriptionFromUserId(uid) end)
-	if ok and desc then return desc end
-	return nil
 end
 
 local function otherPlayers()
@@ -2102,19 +2200,124 @@ local function otherPlayers()
 	return list
 end
 
+local LOOK_CLASSES = { "Shirt", "Pants", "ShirtGraphic", "BodyColors", "CharacterMesh" }
+local function isLookItem(c)
+	if c:IsA("Accessory") then return true end
+	for _, cls in ipairs(LOOK_CLASSES) do
+		if c:IsA(cls) then return true end
+	end
+	return false
+end
+
+local function addLookItem(item)
+	local copy = item:Clone()
+	if copy:IsA("Accessory") and Humanoid then
+		if not pcall(function() Humanoid:AddAccessory(copy) end) then copy.Parent = Character end
+	else
+		copy.Parent = Character
+	end
+end
+
+-- remembers how you looked before the first change (Restore Avatar puts it back)
+function Avatar.snapshot()
+	if Avatar.backup or not Character then return end
+	local b = { items = {} }
+	for _, c in ipairs(Character:GetChildren()) do
+		if isLookItem(c) then b.items[#b.items + 1] = c:Clone() end
+	end
+	local head = Character:FindFirstChild("Head")
+	local face = head and head:FindFirstChildOfClass("Decal")
+	if face then b.face = face.Texture end
+	Avatar.backup = b
+end
+
+function Avatar.wipe()
+	if Humanoid then pcall(function() Humanoid:RemoveAccessories() end) end
+	for _, c in ipairs(Character:GetChildren()) do
+		if isLookItem(c) then c:Destroy() end
+	end
+end
+
+-- copies every look item (and face / head mesh) from a character or appearance model
+function Avatar.add(source)
+	for _, c in ipairs(source:GetChildren()) do
+		if isLookItem(c) then addLookItem(c) end
+	end
+	local sHead, head = source:FindFirstChild("Head"), Character:FindFirstChild("Head")
+	if sHead and head then
+		local sFace, face = sHead:FindFirstChildOfClass("Decal"), head:FindFirstChildOfClass("Decal")
+		if sFace and face then face.Texture = sFace.Texture end
+		local sMesh, mesh = sHead:FindFirstChildOfClass("SpecialMesh"), head:FindFirstChildOfClass("SpecialMesh")
+		if sMesh and mesh then
+			pcall(function()
+				mesh.MeshId = sMesh.MeshId
+				mesh.TextureId = sMesh.TextureId
+				mesh.Scale = sMesh.Scale
+			end)
+		end
+	end
+end
+
+function Avatar.findPlayer(text, exactOnly)
+	local q = string.lower(text)
+	local partial
+	for _, p in ipairs(otherPlayers()) do
+		local pn, dn = string.lower(p.Name), string.lower(p.DisplayName)
+		if pn == q or dn == q then return p end
+		if not exactOnly and not partial and (string.find(pn, q, 1, true) or string.find(dn, q, 1, true)) then partial = p end
+	end
+	return partial
+end
+
+-- any Roblox user (online or not): downloads their avatar appearance by user id
+function Avatar.fromUserId(uid)
+	if not Character or not Humanoid then return false, "No character" end
+	local ok, model = pcall(function() return Players:GetCharacterAppearanceAsync(uid) end)
+	if ok and model then
+		Avatar.snapshot()
+		Avatar.wipe()
+		Avatar.add(model)
+		model:Destroy()
+		return true
+	end
+	local okd, desc = pcall(function() return Players:GetHumanoidDescriptionFromUserId(uid) end)
+	if okd and desc then
+		Avatar.snapshot()
+		if pcall(function() Humanoid:ApplyDescription(desc) end) then return true end
+	end
+	return false, "Couldn't load avatar"
+end
+
+-- a player in this server: copy exactly what their character is wearing right now
+function Avatar.fromPlayer(p)
+	if not Character or not Humanoid then return false, "No character" end
+	if p.Character then
+		Avatar.snapshot()
+		Avatar.wipe()
+		Avatar.add(p.Character)
+		return true
+	end
+	return Avatar.fromUserId(p.UserId)
+end
+
 Actions.copyAvatar = function(btn, text)
 	task.spawn(function()
 		text = string.match(text or "", "^%s*(.-)%s*$")
 		if text == "" then flash(btn, "Type a name or id", "Copy Avatar"); return end
-		local uid = tonumber(text)
-		if not uid then
-			local ok, res = pcall(function() return Players:GetUserIdFromNameAsync(text) end)
-			if not ok then flash(btn, "User not found", "Copy Avatar"); return end
-			uid = res
+		local ok, err
+		local p = Avatar.findPlayer(text, tonumber(text) ~= nil)
+		if p then
+			ok, err = Avatar.fromPlayer(p)
+		else
+			local uid = tonumber(text)
+			if not uid then
+				local okId, res = pcall(function() return Players:GetUserIdFromNameAsync(text) end)
+				if not okId then flash(btn, "User not found", "Copy Avatar"); return end
+				uid = res
+			end
+			ok, err = Avatar.fromUserId(uid)
 		end
-		local desc = descFromUserId(uid)
-		if not desc then flash(btn, "Couldn't load avatar", "Copy Avatar"); return end
-		flash(btn, applyDesc(desc) and "Copied!" or "Failed", "Copy Avatar")
+		flash(btn, ok and "Copied!" or (err or "Failed"), "Copy Avatar")
 	end)
 end
 
@@ -2123,42 +2326,55 @@ Actions.copyRandom = function(btn)
 		local list = otherPlayers()
 		if #list == 0 then flash(btn, "No other players", "Copy Random Player"); return end
 		local p = list[math.random(1, #list)]
-		local desc = descFromUserId(p.UserId)
-		if not desc then flash(btn, "Couldn't load avatar", "Copy Random Player"); return end
-		flash(btn, applyDesc(desc) and ("Copied " .. p.Name) or "Failed", "Copy Random Player")
+		local ok, err = Avatar.fromPlayer(p)
+		flash(btn, ok and ("Copied " .. p.Name) or (err or "Failed"), "Copy Random Player")
 	end)
 end
 
 Actions.scramble = function(btn)
 	task.spawn(function()
-		if not Humanoid then return end
-		local okd, base = pcall(function() return Humanoid:GetAppliedDescription() end)
-		if not okd or not base then flash(btn, "Failed", "Scramble Avatar"); return end
-		local fields = { "Shirt", "Pants", "GraphicTShirt", "Face", "HatAccessory", "HairAccessory", "FaceAccessory", "NeckAccessory", "ShouldersAccessory", "FrontAccessory", "BackAccessory", "WaistAccessory" }
-		local donors = {}
+		if not Character or not Humanoid then flash(btn, "No character", "Scramble Avatar"); return end
+		Avatar.snapshot()
+		local shirts, pants, accs = {}, {}, {}
 		for _, p in ipairs(otherPlayers()) do
-			if #donors >= 6 then break end
-			local d = descFromUserId(p.UserId)
-			if d then donors[#donors + 1] = d end
+			if p.Character then
+				for _, c in ipairs(p.Character:GetChildren()) do
+					if c:IsA("Shirt") then
+						shirts[#shirts + 1] = c
+					elseif c:IsA("Pants") then
+						pants[#pants + 1] = c
+					elseif c:IsA("Accessory") then
+						accs[#accs + 1] = c
+					end
+				end
+			end
 		end
-		for _, f in ipairs(fields) do
-			local d = donors[math.random(1, math.max(#donors, 1))]
-			if d then pcall(function() base[f] = d[f] end) end
-		end
+		Avatar.wipe()
 		local function rc() return Color3.fromHSV(math.random(), 0.45, 0.9) end
-		pcall(function()
-			base.HeadColor, base.TorsoColor = rc(), rc()
-			base.LeftArmColor, base.RightArmColor = rc(), rc()
-			base.LeftLegColor, base.RightLegColor = rc(), rc()
-		end)
-		flash(btn, applyDesc(base) and "Scrambled!" or "Failed", "Scramble Avatar")
+		local bc = Instance.new("BodyColors")
+		bc.HeadColor3, bc.TorsoColor3 = rc(), rc()
+		bc.LeftArmColor3, bc.RightArmColor3 = rc(), rc()
+		bc.LeftLegColor3, bc.RightLegColor3 = rc(), rc()
+		bc.Parent = Character
+		if #shirts > 0 then addLookItem(shirts[math.random(1, #shirts)]) end
+		if #pants > 0 then addLookItem(pants[math.random(1, #pants)]) end
+		for _ = 1, math.min(3, #accs) do
+			addLookItem(accs[math.random(1, #accs)])
+		end
+		flash(btn, "Scrambled!", "Scramble Avatar")
 	end)
 end
 
 Actions.restore = function(btn)
 	task.spawn(function()
-		if not originalDesc then flash(btn, "Nothing to restore", "Restore Avatar"); return end
-		flash(btn, applyDesc(originalDesc) and "Restored!" or "Failed", "Restore Avatar")
+		local b = Avatar.backup
+		if not b or not Character or not Humanoid then flash(btn, "Nothing to restore", "Restore Avatar"); return end
+		Avatar.wipe()
+		for _, item in ipairs(b.items) do addLookItem(item) end
+		local head = Character:FindFirstChild("Head")
+		local face = head and head:FindFirstChildOfClass("Decal")
+		if face and b.face then face.Texture = b.face end
+		flash(btn, "Restored!", "Restore Avatar")
 	end)
 end
 
@@ -2174,7 +2390,7 @@ table.insert(connections, RunService.RenderStepped:Connect(function()
 	if not cam then return end
 
 	if Character then
-		if cfg.SpeedHackEnabled and Humanoid then Humanoid.WalkSpeed = cfg.WalkSpeedValue end
+		if cfg.SpeedHackEnabled and Humanoid and not farmDoorBusy then Humanoid.WalkSpeed = cfg.WalkSpeedValue end
 		if cfg.NoclipEnabled then
 			for _, part in ipairs(Character:GetDescendants()) do
 				if part:IsA("BasePart") then part.CanCollide = false end
@@ -2337,7 +2553,7 @@ local function makeTapDrag(btn, onTap)
 	end)
 	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-			local delta = input.Position - dragStart
+			local delta = (input.Position - dragStart) * DRAG_SPEED
 			if delta.Magnitude > 8 then moved = true end
 			if moved then
 				btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
