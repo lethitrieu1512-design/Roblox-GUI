@@ -14,7 +14,7 @@ if getgenv().TheS_Cleanup then pcall(getgenv().TheS_Cleanup) end
 
 if not Drawing then
 	warn("CodeBot: your executor has no Drawing library, ESP will not render.")
-end
+endUDim2
 
 getgenv().Config = {
 	ESPEnabled = true,
@@ -46,6 +46,22 @@ getgenv().Config = {
 	KillFarmSpeed = 385,
 	UseIdleSpot = true,
 	StableCamera = true,
+
+	AutoBlockEnabled = false,
+	OnlyLockedTarget = false,
+	OnlyBlockAngle = false,
+	ShowAngle = false,
+	OnlySelectedTarget = false,
+	SelectedTarget = "None",
+	BlockRange = 20,
+	BlockAngle = 90,
+	BlockKey = "F",
+	PunishEnabled = false,
+	DashPunish = true,
+	PunishRange = 25,
+	DashPunishDelay = 0.05,
+	M1CatchRange = 30,
+	DashKey = "Q",
 	PumpkinESPEnabled = true,
 	PlayerHighlightEnabled = true,
 
@@ -130,6 +146,8 @@ local C = {
 
 local connections = {}
 local FarmUI = {}
+local Actions = {}
+local UIRefs = {}
 local featureCount = 0
 local hideables = {} -- labels affected by "Hide Username"
 local statLabels = {}
@@ -279,7 +297,7 @@ pName.Size = UDim2.new(1, -130, 0, 32)
 table.insert(hideables, { label = pName, real = player.Name, hidden = "Hidden" })
 
 local pGame = txt(profileBar, "Roblox", 20, C.SubText, F.Reg)
-pGame.Position = UDim2.new(0, 114, 0.5, 18)
+pGame.Position = .new(0, 114, 0.5, 18)
 pGame.Size = UDim2.new(1, -130, 0, 28)
 task.spawn(function()
 	local ok, info = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId) end)
@@ -456,20 +474,29 @@ local function addCheckbox(sec, name, startOn, callback)
 	l.Size = UDim2.new(1, -130, 0, S.Label + 10)
 
 	local state = startOn
+	local function apply(v)
+		state = v
+		mark.Visible = v
+		TweenService:Create(box, TweenInfo.new(0.12), { BackgroundColor3 = v and Color3.fromRGB(228, 229, 235) or C.IconBox }):Play()
+	end
 	box.MouseButton1Click:Connect(function()
-		state = not state
-		mark.Visible = state
-		TweenService:Create(box, TweenInfo.new(0.12), { BackgroundColor3 = state and Color3.fromRGB(228, 229, 235) or C.IconBox }):Play()
+		apply(not state)
 		if callback then callback(state) end
 	end)
+	-- returned setter lets code (e.g. a hotkey) flip the checkbox and run its callback
+	return function(v)
+		apply(v)
+		if callback then callback(v) end
+	end
 end
 
 local function addToggle(sec, name, startOn, callback)
 	return addCheckbox(sec, name, startOn, callback)
 end
 
-local function addSlider(sec, name, minV, maxV, startV, suffix, callback)
+local function addSlider(sec, name, minV, maxV, startV, suffix, callback, step)
 	featureCount = featureCount + 1
+	step = step or 1
 	local r = row(sec, 124, name)
 	rowLabel(r, name, 34)
 	local valLabel = txt(r, "", S.Value, C.White, F.Bold, Enum.TextXAlignment.Right)
@@ -490,7 +517,8 @@ local function addSlider(sec, name, minV, maxV, startV, suffix, callback)
 	local dragging = false
 	local function update(x)
 		local rel = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-		local v = math.floor(minV + rel * (maxV - minV) + 0.5)
+		local v = math.floor((minV + rel * (maxV - minV)) / step + 0.5) * step
+		v = math.floor(v * 1000 + 0.5) / 1000
 		fill.Size = UDim2.new(rel, 0, 1, 0)
 		knob.Position = UDim2.new(rel, 0, 0.5, 0)
 		valLabel.Text = tostring(v) .. (suffix or "")
@@ -556,6 +584,7 @@ local function addInput(sec, name, placeholder, callback)
 	tb.FocusLost:Connect(function()
 		if callback then callback(tb.Text) end
 	end)
+	return tb
 end
 
 local function addDropdown(sec, name, options, default, callback)
@@ -605,6 +634,108 @@ local function addInfo(sec, text)
 	local box = create("Frame", { Size = UDim2.new(1, -62, 0, 68), Position = UDim2.new(0, 31, 0, 8), BackgroundColor3 = C.IconBox, BorderSizePixel = 0 }, r)
 	corner(box, 16)
 	return create("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), Text = text, TextSize = 22, Font = F.Bold, TextColor3 = C.White }, box)
+end
+
+local function addButton(sec, text, callback)
+	featureCount = featureCount + 1
+	local r = row(sec, 88, text)
+	sec.dividers[#sec.dividers].Visible = false
+	local btn = create("TextButton", {
+		Size = UDim2.new(1, -62, 0, 68), Position = UDim2.new(0, 31, 0, 10), BackgroundColor3 = C.IconBox,
+		BorderSizePixel = 0, Text = text, TextSize = 22, Font = F.Bold, TextColor3 = C.White, AutoButtonColor = true,
+	}, r)
+	corner(btn, 16)
+	btn.MouseButton1Click:Connect(function() callback(btn) end)
+	return btn
+end
+
+local function addKeybind(sec, name, callback)
+	featureCount = featureCount + 1
+	local r = row(sec, 90, name)
+	local l = rowLabel(r, name, 45)
+	l.Size = UDim2.new(1, -250, 0, S.Label + 10)
+	local btn = create("TextButton", {
+		Size = UDim2.new(0, 190, 0, 66), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -24, 0, 45),
+		BackgroundColor3 = C.IconBox, BorderSizePixel = 0, Text = "None", TextSize = 22, Font = F.Med,
+		TextColor3 = C.White, AutoButtonColor = true,
+	}, r)
+	corner(btn, 16)
+	local waiting, shown = false, "None"
+	btn.MouseButton1Click:Connect(function()
+		waiting = not waiting
+		btn.Text = waiting and "press a key..." or shown
+	end)
+	table.insert(connections, UserInputService.InputBegan:Connect(function(input)
+		if not waiting or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+		waiting = false
+		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
+			shown = "None"
+			callback(nil)
+		else
+			shown = input.KeyCode.Name
+			callback(input.KeyCode)
+		end
+		btn.Text = shown
+	end))
+end
+
+-- dropdown whose list is rebuilt from the current server players every time it opens
+local function addPlayerDropdown(sec, name, callback)
+	featureCount = featureCount + 1
+	local baseH, itemH = 136, 56
+	local r = row(sec, baseH, name)
+	rowLabel(r, name, 34)
+	local box = create("TextButton", { Size = UDim2.new(1, -62, 0, 64), Position = UDim2.new(0, 31, 0, 62), BackgroundColor3 = C.IconBox, BorderSizePixel = 0, Text = "", AutoButtonColor = false }, r)
+	corner(box, 16)
+	local cur = txt(box, "None", 21, C.White, F.Reg)
+	cur.Position = UDim2.new(0, 24, 0.5, 0)
+	cur.Size = UDim2.new(1, -90, 0, 30)
+	local arrow = txt(box, "v", 16, C.BarLight, F.Bold, Enum.TextXAlignment.Center)
+	arrow.AnchorPoint = Vector2.new(0.5, 0.5)
+	arrow.Size = UDim2.new(0, 24, 0, 24)
+	arrow.Position = UDim2.new(1, -34, 0.5, 0)
+
+	local list = create("ScrollingFrame", {
+		Size = UDim2.new(1, -62, 0, itemH), Position = UDim2.new(0, 31, 0, baseH - 4), BackgroundColor3 = C.IconBox,
+		BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), Visible = false,
+	}, r)
+	corner(list, 16)
+
+	local open, listH = false, itemH
+	local setOpen
+	local function rebuild()
+		for _, c in ipairs(list:GetChildren()) do
+			if c:IsA("TextButton") then c:Destroy() end
+		end
+		local names = { "None" }
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= player then table.insert(names, p.Name) end
+		end
+		for i, opt in ipairs(names) do
+			local b = create("TextButton", {
+				Size = UDim2.new(1, 0, 0, itemH), Position = UDim2.new(0, 0, 0, (i - 1) * itemH),
+				BackgroundTransparency = 1, Text = opt, TextSize = 21, Font = F.Reg, TextColor3 = C.White,
+				TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
+			}, list)
+			create("UIPadding", { PaddingLeft = UDim.new(0, 24) }, b)
+			b.MouseButton1Click:Connect(function()
+				cur.Text = opt
+				setOpen(false)
+				callback(opt)
+			end)
+		end
+		list.CanvasSize = UDim2.new(0, 0, 0, #names * itemH)
+		listH = math.min(#names, 5) * itemH
+		list.Size = UDim2.new(1, -62, 0, listH)
+	end
+	setOpen = function(v)
+		open = v
+		if v then rebuild() end
+		list.Visible = v
+		arrow.Text = v and "^" or "v"
+		r.Size = UDim2.new(1, 0, 0, v and (baseH + listH + 12) or baseH)
+	end
+	box.MouseButton1Click:Connect(function() setOpen(not open) end)
 end
 
 ---------------------------------------------------------------------
@@ -681,14 +812,6 @@ do -- ESP
 	local b = section(p.left, "Target Visuals", 2, false, "◎")
 	addToggle(b, "Orbit Ring", true, function(v) getgenv().Config.OrbitVisualEnabled = v end)
 	addToggle(b, "Laser Rays", true, function(v) getgenv().Config.LaserRaysEnabled = v end)
-	addToggle(b, "Target Closest Player", true, function(v)
-		getgenv().Config.TargetClosest = v
-		hvhTarget = nil
-	end)
-	addInput(b, "Target Name (optional)", "Type part of a username...", function(v)
-		getgenv().Config.TargetName = v
-		hvhTarget = nil
-	end)
 	finish(b)
 
 	local c = section(p.right, "ESP Colors", 1, false, "◐")
@@ -744,6 +867,14 @@ do -- Combat & HVH
 		getgenv().Config.HVHEnabled = v
 		hvhTarget = nil
 	end)
+	addToggle(c, "Target Closest Player", true, function(v)
+		getgenv().Config.TargetClosest = v
+		hvhTarget = nil
+	end)
+	addInput(c, "Target Player Name", "username or display name...", function(v)
+		getgenv().Config.TargetName = v
+		hvhTarget = nil
+	end)
 	addToggle(c, "Stable Camera (no shake)", true, function(v) getgenv().Config.StableCamera = v end)
 	addSlider(c, "Spin Speed", 100, 20000, 20000, " deg/s", function(v) getgenv().Config.SpinSpeed = v end)
 	addSlider(c, "Orbit Radius", 1, 50, 6, " st", function(v) getgenv().Config.Radius = v end)
@@ -755,6 +886,50 @@ do -- Combat & HVH
 	addToggle(m, "Infinite Jump", false, function(v) getgenv().Config.InfJumpEnabled = v end)
 	addToggle(m, "Noclip", false, function(v) getgenv().Config.NoclipEnabled = v end)
 	finish(m)
+end
+
+do -- Auto Block (Combat)
+	local p = newPage("Auto Block")
+	local keys = { "F", "Q", "E", "R", "T", "G" }
+
+	local a = section(p.left, "Main · Block", 1, false, "◈")
+	UIRefs.setAutoBlock = addToggle(a, "Enabled", false, function(v) getgenv().Config.AutoBlockEnabled = v end)
+	addKeybind(a, "Enabled Key", function(code) getgenv().Config.AutoBlockKeyCode = code end)
+	addToggle(a, "Only Locked Target", false, function(v) getgenv().Config.OnlyLockedTarget = v end)
+	addToggle(a, "Only Block Angle", false, function(v) getgenv().Config.OnlyBlockAngle = v end)
+	addToggle(a, "Show Angle", false, function(v) getgenv().Config.ShowAngle = v end)
+	addToggle(a, "Only Block Selected Target", false, function(v) getgenv().Config.OnlySelectedTarget = v end)
+	addPlayerDropdown(a, "Selected Target", function(v) getgenv().Config.SelectedTarget = v end)
+	finish(a)
+
+	local b = section(p.left, "Punish", 2, false, "◈")
+	addToggle(b, "Auto Punish", false, function(v) getgenv().Config.PunishEnabled = v end)
+	addToggle(b, "Dash Punish", true, function(v) getgenv().Config.DashPunish = v end)
+	finish(b)
+
+	local c = section(p.right, "Main · Configuration", 1, false, "◈")
+	addSlider(c, "Block Range", 5, 60, 20, " studs", function(v) getgenv().Config.BlockRange = v end)
+	addSlider(c, "Block Angle", 10, 360, 90, "°", function(v) getgenv().Config.BlockAngle = v end)
+	addDropdown(c, "Block Key", keys, "F", function(v) getgenv().Config.BlockKey = v end)
+	finish(c)
+
+	local d = section(p.right, "Punish · Configuration", 2, false, "◈")
+	addSlider(d, "Punish Range", 5, 60, 25, " studs", function(v) getgenv().Config.PunishRange = v end)
+	addSlider(d, "Dash Punish Delay", 0, 1, 0.05, "s", function(v) getgenv().Config.DashPunishDelay = v end, 0.01)
+	addSlider(d, "M1 Catch Range", 5, 60, 30, " studs", function(v) getgenv().Config.M1CatchRange = v end)
+	addDropdown(d, "Dash Key", keys, "Q", function(v) getgenv().Config.DashKey = v end)
+	finish(d)
+end
+
+do -- Avatar (Visuals)
+	local p = newPage("Avatar")
+	local a = section(p.left, "Avatar", 1, false, "◍")
+	addButton(a, "Scramble Avatar", function(btn) Actions.scramble(btn) end)
+	addButton(a, "Copy Random Player", function(btn) Actions.copyRandom(btn) end)
+	local targetBox = addInput(a, "Target", "username or id", nil)
+	addButton(a, "Copy Avatar", function(btn) Actions.copyAvatar(btn, targetBox.Text) end)
+	addButton(a, "Restore Avatar", function(btn) Actions.restore(btn) end)
+	finish(a)
 end
 
 do -- Colors
@@ -833,9 +1008,9 @@ local function addCategory(title, subs)
 end
 
 addCategory("Main", { { "Home", "⌂" } })
-addCategory("Visuals", { { "ESP", "◎" } })
+addCategory("Visuals", { { "ESP", "◎" }, { "Avatar", "◍" } })
 addCategory("Farm", { { "Halloween", "✧" } })
-addCategory("Combat", { { "Combat & HVH", "◆" } })
+addCategory("Combat", { { "Auto Block", "◈" }, { "Combat & HVH", "◆" } })
 addCategory("Settings", { { "Colors", "◐" } })
 
 selectPage("Home")
@@ -983,19 +1158,21 @@ end
 
 local function pickTarget()
 	local cfg = getgenv().Config
-	local best, bestDist
 	local nameQ = string.lower(cfg.TargetName or "")
+	local best, bestDist
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p ~= player and p.Character then
 			local hrp = p.Character:FindFirstChild("HumanoidRootPart")
-			if hrp and isValidRoot(hrp) then
-				if nameQ ~= "" then
+			if hrp and isValidRoot(hrp) then -- alive players only
+				if cfg.TargetClosest then
+					if HumanoidRootPart then
+						local d = (HumanoidRootPart.Position - hrp.Position).Magnitude
+						if not bestDist or d < bestDist then best, bestDist = hrp, d end
+					end
+				elseif nameQ ~= "" then
 					if string.find(string.lower(p.Name), nameQ, 1, true) or string.find(string.lower(p.DisplayName), nameQ, 1, true) then
 						return hrp
 					end
-				elseif cfg.TargetClosest and HumanoidRootPart then
-					local d = (HumanoidRootPart.Position - hrp.Position).Magnitude
-					if not bestDist or d < bestDist then best, bestDist = hrp, d end
 				end
 			end
 		end
@@ -1375,6 +1552,16 @@ end
 
 local function flat(v) return Vector3.new(v.X, 0, v.Z) end
 
+-- where the player actually has to stand: next to the prompt, not the door model's pivot
+local function interactPos(door, prompt)
+	if prompt then
+		local par = prompt.Parent
+		if par and par:IsA("BasePart") then return par.Position end
+		if par and par:IsA("Attachment") then return par.WorldPosition end
+	end
+	return doorPos(door)
+end
+
 local function groundOffset()
 	local hrp = HumanoidRootPart
 	local params = RaycastParams.new()
@@ -1385,21 +1572,28 @@ local function groundOffset()
 	return 3
 end
 
-local lastGlideNoclip = 0
--- slides the character to `goal` at the Travel Speed (studs/s). The step is clamped to the
--- remaining distance, so even 1000 st/s never overshoots.
+-- slides the character to `goal` at the Travel Speed (studs/s). The step never exceeds the
+-- remaining distance, so even 1000 st/s cannot overshoot. Collision is switched off every
+-- frame while sliding so walls and props can't shove you off the route.
 local function glideTo(goal, near, deadline)
 	local hrp = HumanoidRootPart
+	if not Character then return false end
+	local parts = {}
+	for _, d in ipairs(Character:GetDescendants()) do
+		if d:IsA("BasePart") then parts[#parts + 1] = d end
+	end
+
+	local result = false
 	while doorFarmActive() do
-		if near() then return true end
-		if os.clock() > deadline then return false end
+		if near() then result = true; break end
+		if os.clock() > deadline then break end
 		local dt = math.min(RunService.Heartbeat:Wait(), 0.1)
-		if not doorFarmActive() then return false end
+		if not doorFarmActive() then break end
 
 		local cur = hrp.Position
 		local diff = goal - cur
 		local dist = diff.Magnitude
-		if dist <= 0.05 then return true end
+		if dist <= 0.05 then result = true; break end
 
 		local step = math.min(getgenv().Config.DoorTravelSpeed * dt, dist)
 		local newPos = cur + diff.Unit * step
@@ -1411,16 +1605,12 @@ local function glideTo(goal, near, deadline)
 		end
 		hrp.AssemblyLinearVelocity = Vector3.zero
 		hrp.AssemblyAngularVelocity = Vector3.zero
-
-		local now = os.clock()
-		if Character and now - lastGlideNoclip > 0.25 then
-			lastGlideNoclip = now
-			for _, part in ipairs(Character:GetDescendants()) do
-				if part:IsA("BasePart") then part.CanCollide = false end
-			end
-		end
+		for _, part in ipairs(parts) do part.CanCollide = false end
+		-- keeps the walking animation playing while we slide
+		if flatDir.Magnitude > 0.5 then pcall(function() Humanoid:Move(flatDir.Unit, false) end) end
 	end
-	return false
+	pcall(function() Humanoid:Move(Vector3.zero, false) end)
+	return result
 end
 
 -- follows a pathfinding route to the door (or a straight line if no route exists)
@@ -1428,18 +1618,22 @@ local function walkTo(targetPos, reach, timeout)
 	local deadline = os.clock() + timeout
 	local offset = groundOffset()
 	local function near() return (HumanoidRootPart.Position - targetPos).Magnitude <= reach end
+	if near() then return true end
 
 	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
 	local ok = pcall(function() path:ComputeAsync(HumanoidRootPart.Position - Vector3.new(0, offset, 0), targetPos) end)
 
 	if ok and path.Status == Enum.PathStatus.Success then
 		for _, wp in ipairs(path:GetWaypoints()) do
+			if near() then return true end
 			if not glideTo(wp.Position + Vector3.new(0, offset, 0), near, deadline) and not near() then
 				return false
 			end
-			if near() then return true end
 		end
+		-- route ended but still not close enough: finish with a straight slide
+		if not near() then glideTo(targetPos + Vector3.new(0, 0, 0), near, deadline) end
 	else
+		setFarmStatus("No path, sliding straight")
 		glideTo(targetPos, near, deadline)
 	end
 	return near()
@@ -1463,22 +1657,27 @@ local function doorLoopStep()
 	end
 
 	farmDoorBusy = true
-	setFarmStatus("Walking to door")
-
 	local prompt = door:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if prompt then pcall(function() prompt.RequiresLineOfSight = false end) end
 	local reach = math.clamp((prompt and prompt.MaxActivationDistance or 10) - 3, 3, 12)
-	local dp = doorPos(door)
+	local target = interactPos(door, prompt)
 
-	if walkTo(dp, reach, 25) and doorFarmActive() then
+	setFarmStatus("Walking to door")
+	local arrived = walkTo(target, reach, 25) and doorFarmActive()
+
+	if arrived then
 		setFarmStatus("Opening door")
-		HumanoidRootPart.CFrame = CFrame.lookAt(HumanoidRootPart.Position, Vector3.new(dp.X, HumanoidRootPart.Position.Y, dp.Z))
+		HumanoidRootPart.CFrame = CFrame.lookAt(HumanoidRootPart.Position, Vector3.new(target.X, HumanoidRootPart.Position.Y, target.Z))
 		local t0 = os.clock()
 		while doorFarmActive() and door.Parent and isDoorReady(door) and os.clock() - t0 < cfg.OpenTimeout do
 			if prompt and prompt.Parent then pressPrompt(prompt) end
 			task.wait(0.4)
 		end
+	else
+		setFarmStatus("Door unreachable, next")
 	end
-	farmState.visited[door] = os.clock()
+	-- a failed door is retried after 10s, an opened one after 30s
+	farmState.visited[door] = os.clock() - (arrived and 0 or 20)
 end
 
 task.spawn(function()
@@ -1599,6 +1798,307 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt)
 end))
 
 ---------------------------------------------------------------------
+-- AUTO BLOCK + PUNISH
+---------------------------------------------------------------------
+local VIM = nil
+pcall(function() VIM = game:GetService("VirtualInputManager") end)
+
+local function sendKey(name, down)
+	if not VIM then return end
+	local code = Enum.KeyCode[name]
+	if code then pcall(function() VIM:SendKeyEvent(down, code, false, game) end) end
+end
+
+local function tapKey(name)
+	sendKey(name, true)
+	task.delay(0.05, function() sendKey(name, false) end)
+end
+
+-- M1 click: sent at the far right edge so it never lands on this window
+local function doM1()
+	local cam = workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+	if VIM then
+		pcall(function()
+			VIM:SendMouseButtonEvent(vp.X * 0.995, vp.Y * 0.45, 0, true, game, 0)
+			VIM:SendMouseButtonEvent(vp.X * 0.995, vp.Y * 0.45, 0, false, game, 0)
+		end)
+	elseif mouse1click then
+		pcall(mouse1click)
+	end
+	local tool = Character and Character:FindFirstChildOfClass("Tool")
+	if tool then pcall(function() tool:Activate() end) end
+end
+
+local NOT_ATTACK = { "idle", "walk", "run", "jump", "fall", "climb", "swim", "sit", "land", "emote", "dance", "pose", "block", "stun", "ragdoll" }
+
+-- an enemy counts as attacking while an Action-priority animation (not idle/walk/block...) plays
+local function isAttacking(char)
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local animator = hum and hum:FindFirstChildOfClass("Animator")
+	if not animator then return false end
+	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+		local pv = track.Priority.Value
+		if track.IsPlaying and pv >= 2 and pv < 1000 and track.Length > 0 and track.Length < 3.5 then
+			local nm = string.lower(track.Name)
+			local skip = false
+			for _, w in ipairs(NOT_ATTACK) do
+				if string.find(nm, w, 1, true) then skip = true; break end
+			end
+			if not skip then return true end
+		end
+	end
+	return false
+end
+
+local function flatDirOf(v) return Vector3.new(v.X, 0, v.Z) end
+
+-- is `pos` inside the cone in front of `cf` (total cone width = angle degrees)?
+local function inFront(cf, pos, angle)
+	local dir = flatDirOf(pos - cf.Position)
+	local look = flatDirOf(cf.LookVector)
+	if dir.Magnitude < 0.01 or look.Magnitude < 0.01 then return true end
+	local c = math.clamp(look.Unit:Dot(dir.Unit), -1, 1)
+	return math.deg(math.acos(c)) <= angle / 2
+end
+
+local function runPunish(hrp, cfg)
+	task.spawn(function()
+		task.wait(cfg.DashPunishDelay)
+		local me = HumanoidRootPart
+		if not (me and me.Parent and hrp.Parent) then return end
+		local d = (hrp.Position - me.Position).Magnitude
+		if cfg.DashPunish and d > 7 and d <= cfg.PunishRange then
+			me.CFrame = CFrame.lookAt(me.Position, Vector3.new(hrp.Position.X, me.Position.Y, hrp.Position.Z))
+			tapKey(cfg.DashKey)
+			task.wait(0.25)
+		end
+		local t0 = os.clock()
+		while os.clock() - t0 < 0.6 and hrp.Parent and HumanoidRootPart do
+			if (hrp.Position - HumanoidRootPart.Position).Magnitude > cfg.M1CatchRange then break end
+			doM1()
+			task.wait(0.12)
+		end
+	end)
+end
+
+local blockHeld, blockUntil, lastPunish = false, 0, 0
+local attackState = {}
+
+table.insert(connections, RunService.Heartbeat:Connect(function()
+	local cfg = getgenv().Config
+	local alive = HumanoidRootPart and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0
+	if not alive or not cfg.AutoBlockEnabled then
+		if blockHeld then
+			blockHeld = false
+			sendKey(cfg.BlockKey, false)
+		end
+	end
+	if not alive or not (cfg.AutoBlockEnabled or cfg.PunishEnabled) then return end
+
+	local now = os.clock()
+	local myCF = HumanoidRootPart.CFrame
+	local lockRoot = cfg.OnlyLockedTarget and getTargetRoot() or nil
+	local range = math.max(cfg.BlockRange, cfg.PunishRange)
+	local wantBlock = false
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player and p.Character then
+			local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+			local hum = p.Character:FindFirstChildOfClass("Humanoid")
+			if hrp and hum and hum.Health > 0 then
+				local dist = (hrp.Position - myCF.Position).Magnitude
+				if dist <= range then
+					local attacking = isAttacking(p.Character)
+					local was = attackState[p]
+					attackState[p] = attacking
+
+					-- enemy's swing just finished while facing us -> punish the endlag
+					if was and not attacking and cfg.PunishEnabled and dist <= cfg.PunishRange and now - lastPunish > 0.5 then
+						local toMe = flatDirOf(myCF.Position - hrp.Position)
+						local look = flatDirOf(hrp.CFrame.LookVector)
+						if toMe.Magnitude > 0.01 and look.Magnitude > 0.01 and look.Unit:Dot(toMe.Unit) > 0.3 then
+							lastPunish = now
+							runPunish(hrp, cfg)
+						end
+					end
+
+					if cfg.AutoBlockEnabled and attacking and dist <= cfg.BlockRange then
+						local ok = true
+						if cfg.OnlySelectedTarget and cfg.SelectedTarget ~= "None" then ok = (p.Name == cfg.SelectedTarget) end
+						if ok and cfg.OnlyLockedTarget then ok = (lockRoot == hrp) end
+						if ok and cfg.OnlyBlockAngle then ok = inFront(myCF, hrp.Position, cfg.BlockAngle) end
+						if ok then wantBlock = true end
+					end
+				else
+					attackState[p] = nil
+				end
+			end
+		end
+	end
+
+	if wantBlock then
+		blockUntil = now + 0.25
+		if not blockHeld then
+			blockHeld = true
+			sendKey(cfg.BlockKey, true)
+		end
+	elseif blockHeld and now > blockUntil then
+		blockHeld = false
+		sendKey(cfg.BlockKey, false)
+	end
+end))
+
+-- hotkey for the Enabled checkbox
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	local cfg = getgenv().Config
+	if cfg.AutoBlockKeyCode and input.KeyCode == cfg.AutoBlockKeyCode and UIRefs.setAutoBlock then
+		UIRefs.setAutoBlock(not cfg.AutoBlockEnabled)
+	end
+end))
+
+-- "Show Angle": draws the block cone on the ground in front of you
+local ANGLE_SEG = 12
+local AngleLines = {}
+if Drawing then
+	for i = 1, ANGLE_SEG + 2 do
+		AngleLines[i] = newDrawing("Line", { Thickness = 1.5, Visible = false, Color = Color3.fromRGB(255, 255, 255) })
+	end
+end
+
+local function renderAngle(cam)
+	local cfg = getgenv().Config
+	if not cfg.ShowAngle or not HumanoidRootPart then
+		for _, l in ipairs(AngleLines) do l.Visible = false end
+		return
+	end
+	local origin = HumanoidRootPart.Position - Vector3.new(0, 2.8, 0)
+	local lv = flatDirOf(HumanoidRootPart.CFrame.LookVector)
+	if lv.Magnitude < 0.01 then return end
+	local base = CFrame.lookAt(origin, origin + lv)
+	local half = math.rad(cfg.BlockAngle / 2)
+	local pts = {}
+	for i = 0, ANGLE_SEG do
+		local a = -half + (2 * half) * (i / ANGLE_SEG)
+		pts[i + 1] = origin + (base * CFrame.Angles(0, a, 0)).LookVector * cfg.BlockRange
+	end
+	local o, oOk = proj(cam, origin)
+	local lines = {}
+	for i = 1, ANGLE_SEG do lines[i] = { pts[i], pts[i + 1] } end
+	lines[ANGLE_SEG + 1] = { origin, pts[1] }
+	lines[ANGLE_SEG + 2] = { origin, pts[ANGLE_SEG + 1] }
+	for i, seg in ipairs(lines) do
+		local a2, aOk = proj(cam, seg[1])
+		local b2, bOk = proj(cam, seg[2])
+		local l = AngleLines[i]
+		if l then
+			if aOk and bOk then
+				l.From, l.To = a2, b2
+				l.Visible = true
+			else
+				l.Visible = false
+			end
+		end
+	end
+end
+
+---------------------------------------------------------------------
+-- AVATAR (client-side visual copy)
+---------------------------------------------------------------------
+local originalDesc = nil
+
+local function applyDesc(desc)
+	if not desc or not Humanoid then return false end
+	if not originalDesc then
+		local okd, d = pcall(function() return Humanoid:GetAppliedDescription() end)
+		if okd then originalDesc = d end
+	end
+	return (pcall(function() Humanoid:ApplyDescription(desc) end))
+end
+
+local function flash(btn, msg, orig)
+	btn.Text = msg
+	task.delay(1.4, function()
+		if btn.Parent then btn.Text = orig end
+	end)
+end
+
+local function descFromUserId(uid)
+	local ok, desc = pcall(function() return Players:GetHumanoidDescriptionFromUserId(uid) end)
+	if ok and desc then return desc end
+	return nil
+end
+
+local function otherPlayers()
+	local list = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player then list[#list + 1] = p end
+	end
+	return list
+end
+
+Actions.copyAvatar = function(btn, text)
+	task.spawn(function()
+		text = string.match(text or "", "^%s*(.-)%s*$")
+		if text == "" then flash(btn, "Type a name or id", "Copy Avatar"); return end
+		local uid = tonumber(text)
+		if not uid then
+			local ok, res = pcall(function() return Players:GetUserIdFromNameAsync(text) end)
+			if not ok then flash(btn, "User not found", "Copy Avatar"); return end
+			uid = res
+		end
+		local desc = descFromUserId(uid)
+		if not desc then flash(btn, "Couldn't load avatar", "Copy Avatar"); return end
+		flash(btn, applyDesc(desc) and "Copied!" or "Failed", "Copy Avatar")
+	end)
+end
+
+Actions.copyRandom = function(btn)
+	task.spawn(function()
+		local list = otherPlayers()
+		if #list == 0 then flash(btn, "No other players", "Copy Random Player"); return end
+		local p = list[math.random(1, #list)]
+		local desc = descFromUserId(p.UserId)
+		if not desc then flash(btn, "Couldn't load avatar", "Copy Random Player"); return end
+		flash(btn, applyDesc(desc) and ("Copied " .. p.Name) or "Failed", "Copy Random Player")
+	end)
+end
+
+Actions.scramble = function(btn)
+	task.spawn(function()
+		if not Humanoid then return end
+		local okd, base = pcall(function() return Humanoid:GetAppliedDescription() end)
+		if not okd or not base then flash(btn, "Failed", "Scramble Avatar"); return end
+		local fields = { "Shirt", "Pants", "GraphicTShirt", "Face", "HatAccessory", "HairAccessory", "FaceAccessory", "NeckAccessory", "ShouldersAccessory", "FrontAccessory", "BackAccessory", "WaistAccessory" }
+		local donors = {}
+		for _, p in ipairs(otherPlayers()) do
+			if #donors >= 6 then break end
+			local d = descFromUserId(p.UserId)
+			if d then donors[#donors + 1] = d end
+		end
+		for _, f in ipairs(fields) do
+			local d = donors[math.random(1, math.max(#donors, 1))]
+			if d then pcall(function() base[f] = d[f] end) end
+		end
+		local function rc() return Color3.fromHSV(math.random(), 0.45, 0.9) end
+		pcall(function()
+			base.HeadColor, base.TorsoColor = rc(), rc()
+			base.LeftArmColor, base.RightArmColor = rc(), rc()
+			base.LeftLegColor, base.RightLegColor = rc(), rc()
+		end)
+		flash(btn, applyDesc(base) and "Scrambled!" or "Failed", "Scramble Avatar")
+	end)
+end
+
+Actions.restore = function(btn)
+	task.spawn(function()
+		if not originalDesc then flash(btn, "Nothing to restore", "Restore Avatar"); return end
+		flash(btn, applyDesc(originalDesc) and "Restored!" or "Failed", "Restore Avatar")
+	end)
+end
+
+---------------------------------------------------------------------
 -- MAIN RENDER LOOP
 ---------------------------------------------------------------------
 local frameCount = 0
@@ -1633,6 +2133,7 @@ table.insert(connections, RunService.RenderStepped:Connect(function()
 	if Drawing then
 		pcall(renderPlayers, cam)
 		pcall(renderTarget, cam, os.clock())
+		pcall(renderAngle, cam)
 
 		for doorObj, objs in pairs(DoorESPObjects) do
 			if doorObj and doorObj.Parent then
@@ -1803,6 +2304,8 @@ local function cleanup()
 	for _, objs in pairs(DoorESPObjects) do removeAll(objs) end
 	for _, objs in pairs(SkeletonESPObjects) do removeAll(objs) end
 	removeAll(TargetVis)
+	removeAll(AngleLines)
+	if blockHeld then sendKey(getgenv().Config.BlockKey, false) end
 	for _, hl in pairs(Highlights) do hl:Destroy() end
 	screenGui:Destroy()
 end
