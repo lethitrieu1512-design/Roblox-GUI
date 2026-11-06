@@ -29,7 +29,7 @@ getgenv().Config = {
 	HVHEnabled = false,
 	TargetClosest = true,
 	TargetName = "",
-	SpinSpeed = 5000, -- degrees per second (slider max 10000)
+	SpinSpeed = 20000, -- degrees per second (slider max 20000)
 	Radius = 6,
 
 	DoorESPEnabled = true,
@@ -39,7 +39,7 @@ getgenv().Config = {
 	KillAuraSkeletons = false,
 	DoorShowDistance = true,
 	InvisibleFarming = true,
-	DoorTravelSpeed = 40,
+	DoorTravelSpeed = 400,
 	OpenTimeout = 6,
 	KillFarmEnabled = false,
 	KillFarmRole = "Killer",
@@ -711,7 +711,7 @@ do -- Halloween (Farm)
 	addColor(a, "ESP Colour", Color3.fromRGB(255, 200, 0), function(v) getgenv().Config.DoorColor = v end)
 	addToggle(a, "Auto Doors", false, function(v) getgenv().Config.AutoFarmDoors = v end)
 	addToggle(a, "Invisible While Farming", true, function(v) getgenv().Config.InvisibleFarming = v end)
-	addSlider(a, "Travel Speed", 16, 150, 40, " st/s", function(v) getgenv().Config.DoorTravelSpeed = v end)
+	addSlider(a, "Travel Speed", 100, 1000, 400, " st/s", function(v) getgenv().Config.DoorTravelSpeed = v end)
 	addSlider(a, "Open Timeout", 1, 20, 6, "s", function(v) getgenv().Config.OpenTimeout = v end)
 	finish(a)
 
@@ -745,7 +745,7 @@ do -- Combat & HVH
 		hvhTarget = nil
 	end)
 	addToggle(c, "Stable Camera (no shake)", true, function(v) getgenv().Config.StableCamera = v end)
-	addSlider(c, "Spin Speed", 100, 10000, 5000, " deg/s", function(v) getgenv().Config.SpinSpeed = v end)
+	addSlider(c, "Spin Speed", 100, 20000, 20000, " deg/s", function(v) getgenv().Config.SpinSpeed = v end)
 	addSlider(c, "Orbit Radius", 1, 50, 6, " st", function(v) getgenv().Config.Radius = v end)
 	finish(c)
 
@@ -1211,7 +1211,10 @@ table.insert(connections, RunService.Heartbeat:Connect(function(dt)
 			Humanoid.AutoRotate = false
 
 			-- SpinSpeed = degrees per second (max 10000)
-			orbitAngle = (orbitAngle + math.rad(cfg.SpinSpeed) * dt) % (math.pi * 2)
+			-- snap the frame time to a steady rate (60/45/30 fps...) so every frame turns
+			-- by exactly the same angle; raw dt noise is what made fast spins shake
+			local fps = math.clamp(5 * math.floor((1 / math.max(dt, 0.0001)) / 5 + 0.5), 10, 240)
+			orbitAngle = (orbitAngle + math.rad(cfg.SpinSpeed) / fps) % (math.pi * 2)
 
 			-- smooth the target position so network jitter on the target doesn't shake you
 			local rawCenter = targetRoot.Position
@@ -1372,54 +1375,81 @@ end
 
 local function flat(v) return Vector3.new(v.X, 0, v.Z) end
 
--- real walking: pathfinding + jumps, falls back to walking straight at the point
-local function walkTo(targetPos, stopDist, timeout)
-	local started = os.clock()
-	local function arrived() return (HumanoidRootPart.Position - targetPos).Magnitude <= stopDist end
-
-	local waypoints
-	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
-	local ok = pcall(function() path:ComputeAsync(HumanoidRootPart.Position, targetPos) end)
-	if ok and path.Status == Enum.PathStatus.Success then waypoints = path:GetWaypoints() end
-
-	if waypoints then
-		for _, wp in ipairs(waypoints) do
-			if wp.Action == Enum.PathWaypointAction.Jump then Humanoid.Jump = true end
-			Humanoid:MoveTo(wp.Position)
-			local t0 = os.clock()
-			while doorFarmActive() do
-				if arrived() then return true end
-				if (flat(HumanoidRootPart.Position) - flat(wp.Position)).Magnitude < 3.5 then break end
-				if os.clock() - t0 > 2.5 or os.clock() - started > timeout then break end
-				task.wait(0.05)
-			end
-			if not doorFarmActive() or os.clock() - started > timeout then return false end
-		end
-		return arrived()
-	end
-
-	local lastPos, lastMove = HumanoidRootPart.Position, os.clock()
-	while doorFarmActive() and os.clock() - started < timeout do
-		if arrived() then return true end
-		Humanoid:MoveTo(targetPos)
-		task.wait(0.1)
-		if (HumanoidRootPart.Position - lastPos).Magnitude > 1 then
-			lastPos, lastMove = HumanoidRootPart.Position, os.clock()
-		elseif os.clock() - lastMove > 0.6 then
-			Humanoid.Jump = true
-			lastMove = os.clock()
-		end
-	end
-	return arrived()
+local function groundOffset()
+	local hrp = HumanoidRootPart
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { Character }
+	local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -25, 0), params)
+	if hit then return math.clamp(hrp.Position.Y - hit.Position.Y, 1.5, 6) end
+	return 3
 end
 
-local origWalkSpeed = nil
+local lastGlideNoclip = 0
+-- slides the character to `goal` at the Travel Speed (studs/s). The step is clamped to the
+-- remaining distance, so even 1000 st/s never overshoots.
+local function glideTo(goal, near, deadline)
+	local hrp = HumanoidRootPart
+	while doorFarmActive() do
+		if near() then return true end
+		if os.clock() > deadline then return false end
+		local dt = math.min(RunService.Heartbeat:Wait(), 0.1)
+		if not doorFarmActive() then return false end
+
+		local cur = hrp.Position
+		local diff = goal - cur
+		local dist = diff.Magnitude
+		if dist <= 0.05 then return true end
+
+		local step = math.min(getgenv().Config.DoorTravelSpeed * dt, dist)
+		local newPos = cur + diff.Unit * step
+		local flatDir = Vector3.new(diff.X, 0, diff.Z)
+		if flatDir.Magnitude > 0.5 then
+			hrp.CFrame = CFrame.lookAt(newPos, newPos + flatDir)
+		else
+			hrp.CFrame = CFrame.new(newPos) * (hrp.CFrame - hrp.CFrame.Position)
+		end
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+
+		local now = os.clock()
+		if Character and now - lastGlideNoclip > 0.25 then
+			lastGlideNoclip = now
+			for _, part in ipairs(Character:GetDescendants()) do
+				if part:IsA("BasePart") then part.CanCollide = false end
+			end
+		end
+	end
+	return false
+end
+
+-- follows a pathfinding route to the door (or a straight line if no route exists)
+local function walkTo(targetPos, reach, timeout)
+	local deadline = os.clock() + timeout
+	local offset = groundOffset()
+	local function near() return (HumanoidRootPart.Position - targetPos).Magnitude <= reach end
+
+	local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
+	local ok = pcall(function() path:ComputeAsync(HumanoidRootPart.Position - Vector3.new(0, offset, 0), targetPos) end)
+
+	if ok and path.Status == Enum.PathStatus.Success then
+		for _, wp in ipairs(path:GetWaypoints()) do
+			if not glideTo(wp.Position + Vector3.new(0, offset, 0), near, deadline) and not near() then
+				return false
+			end
+			if near() then return true end
+		end
+	else
+		glideTo(targetPos, near, deadline)
+	end
+	return near()
+end
+
+local origWalkSpeed = nil -- kept for cleanup (walk speed is no longer changed)
 local function doorLoopStep()
 	local cfg = getgenv().Config
 	if not doorFarmActive() then
 		farmDoorBusy = false
-		if origWalkSpeed and Humanoid then Humanoid.WalkSpeed = origWalkSpeed end
-		origWalkSpeed = nil
 		task.wait(0.3)
 		return
 	end
@@ -1427,15 +1457,12 @@ local function doorLoopStep()
 	local door = pickDoor()
 	if not door then
 		farmDoorBusy = false
-		if origWalkSpeed then Humanoid.WalkSpeed = origWalkSpeed; origWalkSpeed = nil end
 		if not cfg.KillFarmEnabled then setFarmStatus("Waiting for door") end
 		task.wait(0.5)
 		return
 	end
 
 	farmDoorBusy = true
-	if not origWalkSpeed then origWalkSpeed = Humanoid.WalkSpeed end
-	Humanoid.WalkSpeed = cfg.DoorTravelSpeed
 	setFarmStatus("Walking to door")
 
 	local prompt = door:FindFirstChildWhichIsA("ProximityPrompt", true)
@@ -1444,7 +1471,6 @@ local function doorLoopStep()
 
 	if walkTo(dp, reach, 25) and doorFarmActive() then
 		setFarmStatus("Opening door")
-		Humanoid:MoveTo(HumanoidRootPart.Position)
 		HumanoidRootPart.CFrame = CFrame.lookAt(HumanoidRootPart.Position, Vector3.new(dp.X, HumanoidRootPart.Position.Y, dp.Z))
 		local t0 = os.clock()
 		while doorFarmActive() and door.Parent and isDoorReady(door) and os.clock() - t0 < cfg.OpenTimeout do
@@ -1709,15 +1735,58 @@ end)
 ---------------------------------------------------------------------
 -- MINIMIZE / CLOSE
 ---------------------------------------------------------------------
-local minimized = false
-minBtn.MouseButton1Click:Connect(function()
-	minimized = not minimized
-	sideScroll.Visible = not minimized
-	profileBar.Visible = not minimized
-	pageHolder.Visible = not minimized
-	local target = minimized and UDim2.fromOffset(DESIGN_W, HEAD_H) or UDim2.fromOffset(DESIGN_W, DESIGN_H)
-	TweenService:Create(main, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { Size = target }):Play()
-end)
+-- small floating logo shown while the window is minimized (tap = restore, drag = move)
+local logoBtn = create("TextButton", {
+	Name = "MiniLogo", Visible = false, Text = "",
+	Size = UDim2.fromOffset(96, 96), AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -110, 0, 30),
+	BackgroundColor3 = C.Window, BorderSizePixel = 0, AutoButtonColor = false,
+}, screenGui)
+create("UICorner", { CornerRadius = UDim.new(1, 0) }, logoBtn)
+stroke(logoBtn, Color3.fromRGB(235, 236, 242), 3)
+local logoRing = create("Frame", {
+	Size = UDim2.fromOffset(58, 26), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+	Rotation = -28, BackgroundTransparency = 1,
+}, logoBtn)
+create("UICorner", { CornerRadius = UDim.new(1, 0) }, logoRing)
+stroke(logoRing, C.White, 4)
+local logoDot = create("Frame", {
+	Size = UDim2.fromOffset(20, 20), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+	BackgroundColor3 = C.White, BorderSizePixel = 0,
+}, logoBtn)
+create("UICorner", { CornerRadius = UDim.new(1, 0) }, logoDot)
+
+local function showMain(v)
+	main.Visible = v
+	logoBtn.Visible = not v
+end
+
+do
+	local dragging, moved, dragStart, startPos = false, false, nil, nil
+	logoBtn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging, moved = true, false
+			dragStart, startPos = input.Position, logoBtn.Position
+		end
+	end)
+	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			if delta.Magnitude > 8 then moved = true end
+			if moved then
+				logoBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+			end
+		end
+	end))
+	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+			dragging = false
+			if not moved then showMain(true) end
+		end
+	end))
+end
+
+minBtn.MouseButton1Click:Connect(function() showMain(false) end)
 
 local function cleanup()
 	running = false
