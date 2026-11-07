@@ -54,6 +54,23 @@ getgenv().Config = {
 	AntiStunEnabled = false,
 	NoBlockSlowEnabled = false,
 	BlockSpeed = 16,
+	LockOnEnabled = false,
+	LockOnPart = "HumanoidRootPart",
+	LockOnSmooth = 0.35,
+	LockOnRange = 100,
+	MobileLockButton = true,
+	DashAssistEnabled = false,
+	DashAssistRange = 40,
+	MobileDashButton = true,
+	AutoM1Enabled = false,
+	AutoM1Range = 12,
+	AutoM1Delay = 0.12,
+	TpTarget = "None",
+	FlyEnabled = false,
+	FlySpeed = 80,
+	AntiVoidEnabled = false,
+	FollowPlayerEnabled = false,
+	SpectateEnabled = false,
 	KillFarmEnabled = false,
 	KillFarmRole = "Killer",
 	KillFarmSpeed = 385,
@@ -1012,6 +1029,50 @@ xpcall(function() -- Avatar (Visuals)
 	finish(a)
 end, function(e) warn("The S: tab \"Avatar (Visuals)\" failed: " .. tostring(e)) end)
 
+xpcall(function() -- Lock On
+	local p = newPage("Lock On")
+	local a = section(p.left, "Lock On", 1, false, "⊕")
+	UIRefs.setLock = addToggle(a, "Enabled", false, function(v)
+		getgenv().Config.LockOnEnabled = v
+		if UIRefs.refreshLockBtn then UIRefs.refreshLockBtn() end
+	end)
+	addToggle(a, "Mobile Toggle Button", true, function(v)
+		getgenv().Config.MobileLockButton = v
+		if UIRefs.refreshLockBtn then UIRefs.refreshLockBtn() end
+	end)
+	addKeybind(a, "Lock On Key", function(code) getgenv().Config.LockOnKeyCode = code end)
+	finish(a)
+
+	local b = section(p.right, "Lock On · Configuration", 1, false, "⊕")
+	addDropdown(b, "Target Part", { "HumanoidRootPart", "Head" }, "HumanoidRootPart", function(v) getgenv().Config.LockOnPart = v end)
+	addSlider(b, "Smoothness", 0.05, 1, 0.35, "", function(v) getgenv().Config.LockOnSmooth = v end, 0.05)
+	addSlider(b, "Lock Range", 20, 300, 100, " studs", function(v) getgenv().Config.LockOnRange = v end)
+	finish(b)
+end, function(e) warn("The S: tab \"Lock On\" failed: " .. tostring(e)) end)
+
+xpcall(function() -- Dash Assist
+	local p = newPage("Dash Assist")
+	local a = section(p.left, "Dash Assist", 1, false, "»")
+	addToggle(a, "Face Target When Dashing", false, function(v) getgenv().Config.DashAssistEnabled = v end)
+	addToggle(a, "Mobile Dash Button", true, function(v)
+		getgenv().Config.MobileDashButton = v
+		if UIRefs.refreshDashBtn then UIRefs.refreshDashBtn() end
+	end)
+	finish(a)
+	local b = section(p.right, "Dash Assist · Configuration", 1, false, "»")
+	addSlider(b, "Assist Range", 10, 100, 40, " studs", function(v) getgenv().Config.DashAssistRange = v end)
+	finish(b)
+end, function(e) warn("The S: tab \"Dash Assist\" failed: " .. tostring(e)) end)
+
+xpcall(function() -- Combat Tools
+	local p = newPage("Combat Tools")
+	local a = section(p.left, "Auto M1", 1, false, "▣")
+	addToggle(a, "Auto M1 (nearest / locked player)", false, function(v) getgenv().Config.AutoM1Enabled = v end)
+	addSlider(a, "M1 Range", 4, 30, 12, " studs", function(v) getgenv().Config.AutoM1Range = v end)
+	addSlider(a, "M1 Delay", 0.05, 0.5, 0.12, "s", function(v) getgenv().Config.AutoM1Delay = v end, 0.01)
+	finish(a)
+end, function(e) warn("The S: tab \"Combat Tools\" failed: " .. tostring(e)) end)
+
 xpcall(function() -- Movement (Player)
 	local p = newPage("Movement")
 
@@ -1021,6 +1082,8 @@ xpcall(function() -- Movement (Player)
 	UIRefs.setSpeed = addToggle(a, "Walkspeed", false, function(v) getgenv().Config.SpeedHackEnabled = v end)
 	addKeybind(a, "Walkspeed Key", function(code) getgenv().Config.WalkspeedKeyCode = code end)
 	addSlider(a, "Speed", 16, 300, 200, "", function(v) getgenv().Config.WalkSpeedValue = v end)
+	addToggle(a, "Fly", false, function(v) getgenv().Config.FlyEnabled = v end)
+	addSlider(a, "Fly Speed", 20, 300, 80, "", function(v) getgenv().Config.FlySpeed = v end)
 	finish(a)
 
 	local b = section(p.right, "Defense", 1, false, "✦")
@@ -1037,6 +1100,7 @@ xpcall(function() -- Utility (Player)
 	addToggle(a, "Fullbright", false, function(v) Actions.fullbright(v) end)
 	addToggle(a, "FPS Boost", false, function(v) Actions.fpsBoost(v) end)
 	addToggle(a, "Auto Rejoin On Kick", false, function(v) getgenv().Config.AutoRejoinEnabled = v end)
+	addToggle(a, "Anti Void (back to last safe spot)", false, function(v) getgenv().Config.AntiVoidEnabled = v end)
 	finish(a)
 end, function(e) warn("The S: tab \"Utility\" failed: " .. tostring(e)) end)
 
@@ -1048,11 +1112,29 @@ xpcall(function() -- Teleports (Exploits)
 	addButton(a, "Set Teleport Spot (here)", function(btn) Actions.setSpot(btn) end)
 	finish(a)
 
+	local t = section(p.left, "Player Teleport", 2, false, "✦")
+	addPlayerDropdown(t, "Pick Player", function(v) getgenv().Config.TpTarget = v end)
+	addButton(t, "Teleport To Player", function(btn) Actions.tpToPlayer(btn) end)
+	addToggle(t, "Spectate Player", false, function(v) Actions.spectate(v) end)
+	addToggle(t, "Walk To / Follow Player", false, function(v) getgenv().Config.FollowPlayerEnabled = v end)
+	finish(t)
+
 	local b = section(p.right, "Domain", 1, false, "✦")
 	addToggle(b, "0.2s Domain (TP to players)", false, function(v) getgenv().Config.DomainEnabled = v end)
 	addSlider(b, "Domain Interval", 0.05, 2, 0.2, "s", function(v) getgenv().Config.DomainInterval = v end, 0.05)
 	finish(b)
 end, function(e) warn("The S: tab \"Teleports\" failed: " .. tostring(e)) end)
+
+xpcall(function() -- Server (Settings)
+	local p = newPage("Server")
+	local a = section(p.left, "Server", 1, false, "⇄")
+	addButton(a, "Rejoin Server", function(btn) Actions.rejoin(btn) end)
+	addButton(a, "Server Hop", function(btn) Actions.serverHop(btn) end)
+	finish(a)
+	local b = section(p.right, "Interface", 1, false, "⇄")
+	addKeybind(b, "Toggle GUI Key", function(code) getgenv().Config.GuiKeyCode = code end)
+	finish(b)
+end, function(e) warn("The S: tab \"Server\" failed: " .. tostring(e)) end)
 
 xpcall(function() -- Colors
 	local p = newPage("Colors")
@@ -1133,10 +1215,10 @@ end
 
 addCategory("Main", { { "Home", "⌂" } })
 addCategory("Farm", { { "Halloween", "✧" } })
-addCategory("Combat", { { "Auto Block", "◈" }, { "Combat & HVH", "◆" } })
+addCategory("Combat", { { "Auto Block", "◈" }, { "Lock On", "⊕" }, { "Dash Assist", "»" }, { "Combat Tools", "▣" }, { "Combat & HVH", "◆" } })
 addCategory("Visuals", { { "ESP", "◎" }, { "Avatar", "◍" } })
 addCategory("Player", { { "Movement", "✦" }, { "Utility", "★" }, { "Teleports", "➤" } })
-addCategory("Settings", { { "Colors", "◐" } }, true)
+addCategory("Settings", { { "Colors", "◐" }, { "Server", "⇄" } }, true)
 
 selectPage("Home")
 end -- window built
@@ -2839,6 +2921,253 @@ table.insert(connections, RunService.Heartbeat:Connect(function()
 end))
 
 ---------------------------------------------------------------------
+-- LOCK ON (camera) + DASH ASSIST + AUTO M1
+---------------------------------------------------------------------
+local LockState = { target = nil }
+
+local function aliveRoot(p, partName)
+	local ch = p and p.Character
+	if not ch then return nil end
+	local hum = ch:FindFirstChildOfClass("Humanoid")
+	local part = ch:FindFirstChild(partName or "HumanoidRootPart") or ch:FindFirstChild("HumanoidRootPart")
+	if hum and part and hum.Health > 0 then return part, hum end
+	return nil
+end
+
+-- the enemy closest to the middle of your screen, inside `range` studs
+local function pickLockTarget(range, partName)
+	local cam = workspace.CurrentCamera
+	if not cam or not HumanoidRootPart then return nil end
+	local center = cam.ViewportSize / 2
+	local best, bestScore
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player then
+			local part = aliveRoot(p, partName)
+			if part then
+				local dist = (part.Position - HumanoidRootPart.Position).Magnitude
+				if dist <= range then
+					local sp, ok = proj(cam, part.Position)
+					local score = ok and (sp - center).Magnitude or (100000 + dist)
+					if not bestScore or score < bestScore then best, bestScore = p, score end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local function nearestEnemyRoot(range)
+	if not HumanoidRootPart then return nil end
+	local best, bestD
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player then
+			local part = aliveRoot(p)
+			if part then
+				local d = (part.Position - HumanoidRootPart.Position).Magnitude
+				if d <= range and (not bestD or d < bestD) then best, bestD = part, d end
+			end
+		end
+	end
+	return best
+end
+
+-- the locked player if there is one, otherwise whoever is nearest
+local function currentAimRoot(range)
+	if LockState.target then
+		local part = aliveRoot(LockState.target)
+		if part then return part end
+	end
+	return nearestEnemyRoot(range)
+end
+
+pcall(function()
+	RunService:BindToRenderStep("TheS_LockCam", Enum.RenderPriority.Camera.Value + 2, function()
+		local cfg = getgenv().Config
+		if not cfg.LockOnEnabled or DoorState.wants or cfg.HVHEnabled or not HumanoidRootPart or not Humanoid or Humanoid.Health <= 0 then
+			LockState.target = nil
+			return
+		end
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		local tp = LockState.target
+		local part = tp and aliveRoot(tp, cfg.LockOnPart)
+		if part and (part.Position - HumanoidRootPart.Position).Magnitude > cfg.LockOnRange * 1.5 then part = nil end
+		if not part then
+			tp = pickLockTarget(cfg.LockOnRange, cfg.LockOnPart)
+			LockState.target = tp
+			part = tp and aliveRoot(tp, cfg.LockOnPart)
+		end
+		if part then
+			local goal = CFrame.lookAt(cam.CFrame.Position, part.Position)
+			cam.CFrame = cam.CFrame:Lerp(goal, math.clamp(cfg.LockOnSmooth, 0.05, 1))
+		end
+	end)
+end)
+
+-- Dash Assist: turn to face the target right before the dash goes off
+local function faceTarget()
+	local cfg = getgenv().Config
+	local part = currentAimRoot(cfg.DashAssistRange)
+	if part and HumanoidRootPart then
+		local me = HumanoidRootPart.Position
+		HumanoidRootPart.CFrame = CFrame.lookAt(me, Vector3.new(part.Position.X, me.Y, part.Position.Z))
+		return true
+	end
+	return false
+end
+
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	local cfg = getgenv().Config
+	if cfg.LockOnKeyCode and input.KeyCode == cfg.LockOnKeyCode and UIRefs.setLock then
+		UIRefs.setLock(not cfg.LockOnEnabled)
+	end
+	if cfg.DashAssistEnabled and input.KeyCode == Enum.KeyCode[cfg.DashKey] then
+		faceTarget()
+	end
+end))
+
+-- Auto M1: swings whenever the locked / nearest player is inside M1 Range
+local lastAutoM1 = 0
+table.insert(connections, RunService.Heartbeat:Connect(function()
+	local cfg = getgenv().Config
+	if not cfg.AutoM1Enabled or not HumanoidRootPart or not Humanoid or Humanoid.Health <= 0 then return end
+	local now = os.clock()
+	if now - lastAutoM1 < cfg.AutoM1Delay then return end
+	local part = currentAimRoot(cfg.AutoM1Range)
+	if part and (part.Position - HumanoidRootPart.Position).Magnitude <= cfg.AutoM1Range then
+		lastAutoM1 = now
+		doM1()
+	end
+end))
+
+---------------------------------------------------------------------
+-- PLAYER TELEPORT / SPECTATE / REJOIN / SERVER HOP
+---------------------------------------------------------------------
+local function tpTargetPlayer()
+	local name = getgenv().Config.TpTarget
+	if not name or name == "None" then return nil end
+	return Players:FindFirstChild(name)
+end
+
+Actions.tpToPlayer = function(btn)
+	local p = tpTargetPlayer()
+	local part = p and aliveRoot(p)
+	if not part or not HumanoidRootPart then flash(btn, "Pick a player first", "Teleport To Player"); return end
+	HumanoidRootPart.CFrame = part.CFrame * CFrame.new(0, 0, 3)
+	HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+	flash(btn, "Teleported!", "Teleport To Player")
+end
+
+Actions.spectate = function(on)
+	getgenv().Config.SpectateEnabled = on
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	if on then
+		local p = tpTargetPlayer()
+		local hum = p and p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+		if hum then cam.CameraSubject = hum end
+	elseif Humanoid then
+		cam.CameraSubject = Humanoid
+	end
+end
+
+Actions.rejoin = function(btn)
+	flash(btn, "Rejoining...", "Rejoin Server")
+	pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, player) end)
+end
+
+-- picks a public server that isn't full and isn't this one
+Actions.serverHop = function(btn)
+	task.spawn(function()
+		flash(btn, "Searching...", "Server Hop")
+		local ok, body = pcall(function()
+			return game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")
+		end)
+		if not ok then flash(btn, "Request failed", "Server Hop"); return end
+		local okJ, data = pcall(function() return game:GetService("HttpService"):JSONDecode(body) end)
+		if not okJ or not data or not data.data then flash(btn, "No server list", "Server Hop"); return end
+		local options = {}
+		for _, sv in ipairs(data.data) do
+			if sv.id ~= game.JobId and sv.playing and sv.maxPlayers and sv.playing < sv.maxPlayers then
+				options[#options + 1] = sv.id
+			end
+		end
+		if #options == 0 then flash(btn, "No other server", "Server Hop"); return end
+		pcall(function()
+			game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, options[math.random(1, #options)], player)
+		end)
+	end)
+end
+
+---------------------------------------------------------------------
+-- FLY + ANTI VOID + FOLLOW PLAYER (walking)
+---------------------------------------------------------------------
+local lastSafePos = nil
+table.insert(connections, RunService.Heartbeat:Connect(function()
+	local cfg = getgenv().Config
+	if not HumanoidRootPart or not Humanoid or Humanoid.Health <= 0 then return end
+
+	-- Anti Void: remember the last spot you stood on, jump back to it if you fall out of the map
+	if Humanoid.FloorMaterial ~= Enum.Material.Air and HumanoidRootPart.Position.Y > -100 then
+		lastSafePos = HumanoidRootPart.Position
+	end
+	if cfg.AntiVoidEnabled and lastSafePos and HumanoidRootPart.Position.Y < workspace.FallenPartsDestroyHeight + 80 then
+		HumanoidRootPart.CFrame = CFrame.new(lastSafePos + Vector3.new(0, 4, 0))
+		HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+		return
+	end
+
+	-- Fly: joystick / WASD moves you, the camera pitch decides up or down while moving
+	-- (Space / Shift also go up / down on PC). No input = hover in place.
+	local busy = DoorState.wants or cfg.DomainEnabled or cfg.HVHEnabled
+	if cfg.FlyEnabled and not busy then
+		local cam = workspace.CurrentCamera
+		if cam then
+			local move = Humanoid.MoveDirection
+			local vel = move * cfg.FlySpeed
+			if move.Magnitude > 0.1 then
+				local look = cam.CFrame.LookVector
+				local flatLook = Vector3.new(look.X, 0, look.Z)
+				if flatLook.Magnitude > 0.01 then
+					vel = vel + Vector3.new(0, look.Y * cfg.FlySpeed * math.max(move:Dot(flatLook.Unit), 0), 0)
+				end
+			end
+			if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vel = vel + Vector3.new(0, cfg.FlySpeed, 0) end
+			if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then vel = vel - Vector3.new(0, cfg.FlySpeed, 0) end
+			HumanoidRootPart.AssemblyLinearVelocity = vel
+		end
+	end
+end))
+
+-- Walk To / Follow Player: real humanoid walking toward the player picked in Player Teleport
+local followBest, followProgressAt, followLastMove = math.huge, 0, 0
+table.insert(connections, RunService.Heartbeat:Connect(function()
+	local cfg = getgenv().Config
+	if not cfg.FollowPlayerEnabled or DoorState.wants or cfg.HVHEnabled or cfg.DomainEnabled then return end
+	local p = tpTargetPlayer()
+	local part = p and aliveRoot(p)
+	if not part or not HumanoidRootPart or not Humanoid or Humanoid.Health <= 0 then return end
+
+	local dist = (HumanoidRootPart.Position - part.Position).Magnitude
+	if dist <= 6 then
+		followBest = math.huge
+		return
+	end
+	local now = os.clock()
+	if now - followLastMove > 0.4 then
+		followLastMove = now
+		Humanoid:MoveTo(part.Position)
+	end
+	if dist < followBest - 0.8 then
+		followBest, followProgressAt = dist, now
+	elseif now - followProgressAt > 1.0 then
+		Humanoid.Jump = true -- stuck: hop and keep going
+		followProgressAt = now
+	end
+end))
+
+---------------------------------------------------------------------
 -- MAIN RENDER LOOP
 ---------------------------------------------------------------------
 local frameCount = 0
@@ -3030,6 +3359,12 @@ end
 
 makeTapDrag(logoBtn, function() showMain(true) end)
 
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	local code = getgenv().Config.GuiKeyCode
+	if code and input.KeyCode == code then showMain(not main.Visible) end
+end))
+
 -- floating Auto Block ON/OFF button for phones (no keyboard needed)
 local blockBtn = create("TextButton", {
 	Name = "BlockBtn", Text = "BLOCK: OFF", TextSize = 18, Font = F.Bold, TextColor3 = C.White,
@@ -3053,6 +3388,42 @@ makeTapDrag(blockBtn, function()
 end)
 UIRefs.refreshBlockBtn()
 
+-- floating LOCK and DASH buttons for phones
+local function floatingButton(name, text, yScale)
+	local b = create("TextButton", {
+		Name = name, Text = text, TextSize = 18, Font = F.Bold, TextColor3 = C.White,
+		Size = UDim2.fromOffset(130, 56), AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -20, yScale, 0),
+		BackgroundColor3 = C.Window, BorderSizePixel = 0, AutoButtonColor = false,
+	}, screenGui)
+	corner(b, 16)
+	return b, stroke(b, Color3.fromRGB(120, 122, 135), 2)
+end
+
+local lockBtn, lockStroke = floatingButton("LockBtn", "LOCK: OFF", 0.52)
+local dashBtn = floatingButton("DashBtn", "DASH", 0.64)
+
+UIRefs.refreshLockBtn = function()
+	local cfg = getgenv().Config
+	lockBtn.Visible = cfg.MobileLockButton
+	lockBtn.Text = cfg.LockOnEnabled and "LOCK: ON" or "LOCK: OFF"
+	lockBtn.TextColor3 = cfg.LockOnEnabled and Color3.fromRGB(0, 255, 120) or C.White
+	lockStroke.Color = cfg.LockOnEnabled and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(120, 122, 135)
+end
+UIRefs.refreshDashBtn = function()
+	dashBtn.Visible = getgenv().Config.MobileDashButton
+end
+makeTapDrag(lockBtn, function()
+	if UIRefs.setLock then UIRefs.setLock(not getgenv().Config.LockOnEnabled) end
+end)
+makeTapDrag(dashBtn, function()
+	local cfg = getgenv().Config
+	if cfg.DashAssistEnabled then faceTarget() end
+	tapKey(cfg.DashKey)
+end)
+UIRefs.refreshLockBtn()
+UIRefs.refreshDashBtn()
+
 minBtn.MouseButton1Click:Connect(function() showMain(false) end)
 
 local function cleanup()
@@ -3065,6 +3436,10 @@ local function cleanup()
 	getgenv().Config.ACBypassEnabled = false
 	Actions.fullbright(false)
 	Actions.fpsBoost(false)
+	Actions.spectate(false)
+	getgenv().Config.LockOnEnabled = false
+	getgenv().Config.AutoM1Enabled = false
+	pcall(function() RunService:UnbindFromRenderStep("TheS_LockCam") end)
 	pcall(function() RunService:UnbindFromRenderStep("TheS_DoorCam") end)
 	restoreDoorSpeed()
 	setFarmInvisible(false)
