@@ -12,7 +12,7 @@ local StatsService = game:GetService("Stats")
 local player = Players.LocalPlayer
 
 -- how fast the window / floating buttons follow your finger (1 = same speed as the finger)
-local DRAG_SPEED = 0.6
+local DRAG_SPEED = 0.7
 
 -- stop any previous copy of this script before starting a new one
 if getgenv().TheS_Cleanup then pcall(getgenv().TheS_Cleanup) end
@@ -46,9 +46,14 @@ getgenv().Config = {
 	DoorShowDistance = true,
 	InvisibleFarming = true,
 	DoorTravelSpeed = 200,
-	FlyHeight = 80,
 	OpenTimeout = 6,
-	DirectDoorRoute = true,
+	DoorJumpBoost = true,
+	CameraLooksAtDoor = true,
+	DoorUseIdleSpot = true,
+	RespawnWhenMarked = false,
+	AntiStunEnabled = false,
+	NoBlockSlowEnabled = false,
+	BlockSpeed = 16,
 	KillFarmEnabled = false,
 	KillFarmRole = "Killer",
 	KillFarmSpeed = 385,
@@ -60,6 +65,8 @@ getgenv().Config = {
 	DomainInterval = 0.2,
 	AntiAFKEnabled = true,
 	FullbrightEnabled = false,
+	AutoRejoinEnabled = false,
+	FPSBoostEnabled = false,
 
 	AutoBlockEnabled = false,
 	MobileBlockButton = true,
@@ -237,10 +244,11 @@ corner(main, 30)
 stroke(main, Color3.fromRGB(46, 48, 58), 2)
 
 local uiScale = create("UIScale", { Scale = 1 }, main)
+local userMul = 1 -- changed by the resize grip in the bottom-right corner
 local function updateScale()
 	local s = screenGui.AbsoluteSize
 	if s.X > 0 and s.Y > 0 then
-		uiScale.Scale = math.min(s.X * 0.78 / DESIGN_W, s.Y * 0.88 / DESIGN_H)
+		uiScale.Scale = math.min(s.X * 0.78 / DESIGN_W, s.Y * 0.88 / DESIGN_H) * userMul
 	end
 end
 updateScale()
@@ -386,6 +394,34 @@ for _, rot in ipairs({ 45, -45 }) do
 end
 
 local pageHolder = create("Frame", { Position = UDim2.new(0, 0, 0, HEAD_H), Size = UDim2.new(1, 0, 1, -HEAD_H), BackgroundTransparency = 1 }, content)
+
+-- resize grip: little corner mark at the bottom-right, drag it to make the window bigger/smaller
+local grip = create("TextButton", {
+	Name = "ResizeGrip", Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+	Size = UDim2.fromOffset(56, 56), AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -4, 1, -4), ZIndex = 20,
+}, main)
+create("Frame", { Size = UDim2.fromOffset(22, 4), AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14), BackgroundColor3 = C.SubText, BorderSizePixel = 0, ZIndex = 21 }, grip)
+create("Frame", { Size = UDim2.fromOffset(4, 22), AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14), BackgroundColor3 = C.SubText, BorderSizePixel = 0, ZIndex = 21 }, grip)
+do
+	local resizing, startPos, startMul, startW = false, nil, 1, 1
+	grip.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			resizing = true
+			startPos, startMul = input.Position, userMul
+			startW = DESIGN_W * uiScale.Scale
+		end
+	end)
+	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+		if resizing and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local dx = input.Position.X - startPos.X
+			userMul = math.clamp(startMul * (startW + dx) / startW, 0.5, 1.3)
+			updateScale()
+		end
+	end))
+	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then resizing = false end
+	end))
+end
 
 ---------------------------------------------------------------------
 -- PAGE / SECTION / ROW BUILDERS
@@ -858,11 +894,15 @@ xpcall(function() -- Halloween (Farm)
 	addToggle(a, "Show Distance", true, function(v) getgenv().Config.DoorShowDistance = v end)
 	addColor(a, "ESP Colour", Color3.fromRGB(255, 200, 0), function(v) getgenv().Config.DoorColor = v end)
 	addToggle(a, "Auto Doors", false, function(v) getgenv().Config.AutoFarmDoors = v end)
-	addToggle(a, "Direct Route (noclip, straight to door)", true, function(v) getgenv().Config.DirectDoorRoute = v end)
+	addToggle(a, "Jump Boost While Farming (climbs obstacles)", true, function(v) getgenv().Config.DoorJumpBoost = v end)
 	addToggle(a, "Invisible While Farming", true, function(v) getgenv().Config.InvisibleFarming = v end)
 	addSlider(a, "Walk Speed To Door", 16, 400, 200, " st/s", function(v) getgenv().Config.DoorTravelSpeed = v end)
-	addSlider(a, "Fly Height", 10, 200, 80, " studs", function(v) getgenv().Config.FlyHeight = v end)
 	addSlider(a, "Open Timeout", 1, 20, 6, "s", function(v) getgenv().Config.OpenTimeout = v end)
+	addToggle(a, "Camera Looks At Door", true, function(v) getgenv().Config.CameraLooksAtDoor = v end)
+	addToggle(a, "Use Idle Spot", true, function(v) getgenv().Config.DoorUseIdleSpot = v end)
+	addToggle(a, "Respawn When Marked (Pumpkin)", false, function(v) getgenv().Config.RespawnWhenMarked = v end)
+	FarmUI.DoorStatus = addInfo(a, "Status: Idle")
+	FarmUI.Doors = addInfo(a, "Doors opened: 0")
 	finish(a)
 
 	local e = section(p.left, "Halloween ESP", 2, false, "✧")
@@ -919,13 +959,6 @@ xpcall(function() -- Combat & HVH
 	addSlider(c, "Spin Speed", 100, 20000, 20000, " deg/s", function(v) getgenv().Config.SpinSpeed = v end)
 	addSlider(c, "Orbit Radius", 1, 50, 6, " st", function(v) getgenv().Config.Radius = v end)
 	finish(c)
-
-	local m = section(p.right, "Movement & Utility", 1, false, "◆")
-	addToggle(m, "Speed Hack", false, function(v) getgenv().Config.SpeedHackEnabled = v end)
-	addSlider(m, "Walk Speed", 16, 300, 200, "", function(v) getgenv().Config.WalkSpeedValue = v end)
-	addToggle(m, "Infinite Jump", false, function(v) getgenv().Config.InfJumpEnabled = v end)
-	addToggle(m, "Noclip", false, function(v) getgenv().Config.NoclipEnabled = v end)
-	finish(m)
 end, function(e) warn("The S: tab \"Combat & HVH\" failed: " .. tostring(e)) end)
 
 xpcall(function() -- Auto Block (Combat)
@@ -979,6 +1012,34 @@ xpcall(function() -- Avatar (Visuals)
 	finish(a)
 end, function(e) warn("The S: tab \"Avatar (Visuals)\" failed: " .. tostring(e)) end)
 
+xpcall(function() -- Movement (Player)
+	local p = newPage("Movement")
+
+	local a = section(p.left, "Movement", 1, false, "✦")
+	addToggle(a, "Infinite Jump", false, function(v) getgenv().Config.InfJumpEnabled = v end)
+	addToggle(a, "Noclip", false, function(v) getgenv().Config.NoclipEnabled = v end)
+	UIRefs.setSpeed = addToggle(a, "Walkspeed", false, function(v) getgenv().Config.SpeedHackEnabled = v end)
+	addKeybind(a, "Walkspeed Key", function(code) getgenv().Config.WalkspeedKeyCode = code end)
+	addSlider(a, "Speed", 16, 300, 200, "", function(v) getgenv().Config.WalkSpeedValue = v end)
+	finish(a)
+
+	local b = section(p.right, "Defense", 1, false, "✦")
+	addToggle(b, "Anti Stun", false, function(v) getgenv().Config.AntiStunEnabled = v end)
+	addToggle(b, "No Block Slow", false, function(v) getgenv().Config.NoBlockSlowEnabled = v end)
+	addSlider(b, "Block Speed", 8, 60, 16, " ws", function(v) getgenv().Config.BlockSpeed = v end)
+	finish(b)
+end, function(e) warn("The S: tab \"Movement\" failed: " .. tostring(e)) end)
+
+xpcall(function() -- Utility (Player)
+	local p = newPage("Utility")
+	local a = section(p.left, "Utility", 1, false, "★")
+	addToggle(a, "Anti AFK", true, function(v) getgenv().Config.AntiAFKEnabled = v end)
+	addToggle(a, "Fullbright", false, function(v) Actions.fullbright(v) end)
+	addToggle(a, "FPS Boost", false, function(v) Actions.fpsBoost(v) end)
+	addToggle(a, "Auto Rejoin On Kick", false, function(v) getgenv().Config.AutoRejoinEnabled = v end)
+	finish(a)
+end, function(e) warn("The S: tab \"Utility\" failed: " .. tostring(e)) end)
+
 xpcall(function() -- Teleports (Exploits)
 	local p = newPage("Teleports")
 
@@ -987,15 +1048,10 @@ xpcall(function() -- Teleports (Exploits)
 	addButton(a, "Set Teleport Spot (here)", function(btn) Actions.setSpot(btn) end)
 	finish(a)
 
-	local b = section(p.left, "Domain", 2, false, "✦")
+	local b = section(p.right, "Domain", 1, false, "✦")
 	addToggle(b, "0.2s Domain (TP to players)", false, function(v) getgenv().Config.DomainEnabled = v end)
 	addSlider(b, "Domain Interval", 0.05, 2, 0.2, "s", function(v) getgenv().Config.DomainInterval = v end, 0.05)
 	finish(b)
-
-	local c = section(p.right, "Extras", 1, false, "✦")
-	addToggle(c, "Anti AFK", true, function(v) getgenv().Config.AntiAFKEnabled = v end)
-	addToggle(c, "Fullbright", false, function(v) Actions.fullbright(v) end)
-	finish(c)
 end, function(e) warn("The S: tab \"Teleports\" failed: " .. tostring(e)) end)
 
 xpcall(function() -- Colors
@@ -1032,7 +1088,7 @@ local function selectPage(name)
 end
 
 local catOrder = 0
-local function addCategory(title, subs)
+local function addCategory(title, subs, startCollapsed)
 	catOrder = catOrder + 1
 	local cat = create("Frame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = catOrder }, sideScroll)
 	create("UIListLayout", { Padding = UDim.new(0, 0), SortOrder = Enum.SortOrder.LayoutOrder }, cat)
@@ -1048,6 +1104,8 @@ local function addCategory(title, subs)
 	local subFrame = create("Frame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 1 }, cat)
 	create("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, subFrame)
 
+	subFrame.Visible = not startCollapsed
+	chev.Text = startCollapsed and ">" or "v"
 	hdr.MouseButton1Click:Connect(function()
 		subFrame.Visible = not subFrame.Visible
 		chev.Text = subFrame.Visible and "v" or ">"
@@ -1074,11 +1132,11 @@ local function addCategory(title, subs)
 end
 
 addCategory("Main", { { "Home", "⌂" } })
-addCategory("Visuals", { { "ESP", "◎" }, { "Avatar", "◍" } })
 addCategory("Farm", { { "Halloween", "✧" } })
 addCategory("Combat", { { "Auto Block", "◈" }, { "Combat & HVH", "◆" } })
-addCategory("Exploits", { { "Teleports", "✦" } })
-addCategory("Settings", { { "Colors", "◐" } })
+addCategory("Visuals", { { "ESP", "◎" }, { "Avatar", "◍" } })
+addCategory("Player", { { "Movement", "✦" }, { "Utility", "★" }, { "Teleports", "➤" } })
+addCategory("Settings", { { "Colors", "◐" } }, true)
 
 selectPage("Home")
 end -- window built
@@ -1494,62 +1552,123 @@ local wasOrbiting = false
 local smoothCenter = nil
 local lastNoclip = 0
 
+-- "orbit"   = normal spin around the target
+-- "walking" = the orbit CFrame kept getting reverted (anti-teleport correction), so we
+--             walk toward the target with the real humanoid instead, then resume orbit
+--             once we're close enough
+local orbitMode = "orbit"
+local orbitFailCount = 0
+local lastSetPos = nil
+local walkLastMoveTo = 0
+local walkBestDist, walkLastProgress = math.huge, 0
+
+local function resetOrbitState()
+	wasOrbiting = false
+	smoothCenter = nil
+	orbitMode = "orbit"
+	orbitFailCount = 0
+	lastSetPos = nil
+	if Humanoid then Humanoid.AutoRotate = true end
+	local cam = workspace.CurrentCamera
+	if cam and Humanoid then cam.CameraSubject = Humanoid end
+end
+
 table.insert(connections, RunService.Heartbeat:Connect(function(dt)
 	local cfg = getgenv().Config
 	dt = math.min(dt, 0.1)
 
 	local canOrbit = cfg.HVHEnabled and not DoorState.wants and not cfg.DomainEnabled and HumanoidRootPart and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0
-	if canOrbit then
-		local targetRoot = getTargetRoot()
-		if targetRoot then
-			wasOrbiting = true
-			Humanoid.AutoRotate = false
-
-			-- SpinSpeed = degrees per second
-			-- snap the frame time to a steady rate (60/45/30 fps...) so every frame turns
-			-- by exactly the same angle; raw dt noise is what made fast spins shake
-			local fps = math.clamp(5 * math.floor((1 / math.max(dt, 0.0001)) / 5 + 0.5), 10, 240)
-			orbitAngle = (orbitAngle + math.rad(cfg.SpinSpeed) / fps) % (math.pi * 2)
-
-			-- smooth the target position so network jitter on the target doesn't shake you
-			local rawCenter = targetRoot.Position
-			if not smoothCenter or (smoothCenter - rawCenter).Magnitude > 40 then
-				smoothCenter = rawCenter
-			else
-				smoothCenter = smoothCenter:Lerp(rawCenter, math.clamp(dt * 30, 0, 1))
-			end
-			local center = smoothCenter
-
-			local pos = center + Vector3.new(math.cos(orbitAngle) * cfg.Radius, 0, math.sin(orbitAngle) * cfg.Radius)
-			HumanoidRootPart.CFrame = CFrame.lookAt(pos, Vector3.new(center.X, pos.Y, center.Z))
-			HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
-			HumanoidRootPart.AssemblyAngularVelocity = Vector3.zero
-
-			-- keep the camera on the target so your view doesn't whip around the circle
-			if cfg.StableCamera then
-				local cam = workspace.CurrentCamera
-				local th = targetRoot.Parent and targetRoot.Parent:FindFirstChildOfClass("Humanoid")
-				if cam and th and cam.CameraSubject ~= th then cam.CameraSubject = th end
-			end
-
-			-- no-collide only a few times per second (doing it every frame is wasteful)
-			local now = os.clock()
-			if Character and now - lastNoclip > 0.25 then
-				lastNoclip = now
-				for _, part in ipairs(Character:GetDescendants()) do
-					if part:IsA("BasePart") then part.CanCollide = false end
-				end
-			end
-			return
-		end
+	if not canOrbit then
+		if wasOrbiting then resetOrbitState() end
+		return
 	end
 
-	if wasOrbiting then
-		wasOrbiting = false
-		smoothCenter = nil
-		if Humanoid then Humanoid.AutoRotate = true end
+	local targetRoot = getTargetRoot()
+	if not targetRoot then
+		if wasOrbiting then resetOrbitState() end
+		return
+	end
+	wasOrbiting = true
+
+	-- smooth the target position so network jitter on the target doesn't shake you
+	local rawCenter = targetRoot.Position
+	if not smoothCenter or (smoothCenter - rawCenter).Magnitude > 40 then
+		smoothCenter = rawCenter
+	else
+		smoothCenter = smoothCenter:Lerp(rawCenter, math.clamp(dt * 30, 0, 1))
+	end
+	local center = smoothCenter
+
+	-- keep the camera on the target so your view doesn't whip around the circle
+	if cfg.StableCamera then
 		local cam = workspace.CurrentCamera
-		if cam and Humanoid then cam.CameraSubject = Humanoid end
+		local th = targetRoot.Parent and targetRoot.Parent:FindFirstChildOfClass("Humanoid")
+		if cam and th and cam.CameraSubject ~= th then cam.CameraSubject = th end
+	end
+
+	if orbitMode == "orbit" then
+		Humanoid.AutoRotate = false
+
+		-- did our LAST orbit teleport actually stick, or did the server/anticheat snap us back?
+		if lastSetPos then
+			if (HumanoidRootPart.Position - lastSetPos).Magnitude > 8 then
+				orbitFailCount = orbitFailCount + 1
+			else
+				orbitFailCount = 0
+			end
+		end
+
+		if orbitFailCount >= 6 then
+			-- teleport keeps getting reverted: stop fighting it, walk to the player instead
+			orbitMode = "walking"
+			orbitFailCount = 0
+			lastSetPos = nil
+			walkBestDist, walkLastProgress = math.huge, os.clock()
+			Humanoid.AutoRotate = true
+			return
+		end
+
+		-- SpinSpeed = degrees per second
+		-- snap the frame time to a steady rate (60/45/30 fps...) so every frame turns
+		-- by exactly the same angle; raw dt noise is what made fast spins shake
+		local fps = math.clamp(5 * math.floor((1 / math.max(dt, 0.0001)) / 5 + 0.5), 10, 240)
+		orbitAngle = (orbitAngle + math.rad(cfg.SpinSpeed) / fps) % (math.pi * 2)
+
+		local pos = center + Vector3.new(math.cos(orbitAngle) * cfg.Radius, 0, math.sin(orbitAngle) * cfg.Radius)
+		HumanoidRootPart.CFrame = CFrame.lookAt(pos, Vector3.new(center.X, pos.Y, center.Z))
+		HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+		HumanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+		lastSetPos = pos
+
+		-- no-collide only a few times per second (doing it every frame is wasteful)
+		local now = os.clock()
+		if Character and now - lastNoclip > 0.25 then
+			lastNoclip = now
+			for _, part in ipairs(Character:GetDescendants()) do
+				if part:IsA("BasePart") then part.CanCollide = false end
+			end
+		end
+	else -- "walking": close the gap with real humanoid movement, no noclip/teleport
+		local dist = (HumanoidRootPart.Position - center).Magnitude
+		if dist <= cfg.Radius + 4 then
+			orbitMode = "orbit"
+			lastSetPos = nil
+			return
+		end
+
+		local now = os.clock()
+		if now - walkLastMoveTo > 0.4 then
+			walkLastMoveTo = now
+			if Humanoid.WalkSpeed < 24 then Humanoid.WalkSpeed = 24 end
+			Humanoid:MoveTo(center)
+		end
+		if dist < walkBestDist - 0.8 then
+			walkBestDist, walkLastProgress = dist, now
+		elseif now - walkLastProgress > 1.0 then
+			-- stuck on something: hop over it and keep trying
+			Humanoid.Jump = true
+			walkLastProgress = now
+		end
 	end
 end))
 
@@ -1694,81 +1813,27 @@ local function interactPos(door, prompt)
 	return doorPos(door)
 end
 
--- slides the character to `goal` at the Travel Speed (studs/s). The step never exceeds the
--- remaining distance, so even 1000 st/s cannot overshoot. Collision is switched off every
--- frame while sliding so walls and props can't shove you off the route.
--- `near` (optional) lets the slide stop early; otherwise it ends exactly on `goal`.
-local function glideTo(goal, near, deadline)
-	local hrp = HumanoidRootPart
-	if not Character then return false end
-	local parts = {}
-	for _, d in ipairs(Character:GetDescendants()) do
-		if d:IsA("BasePart") then parts[#parts + 1] = d end
-	end
-
-	local result = false
-	while doorFarmActive() do
-		if near and near() then result = true; break end
-		if os.clock() > deadline then break end
-		local dt = math.min(RunService.Heartbeat:Wait(), 0.1)
-		if not doorFarmActive() then break end
-
-		local cur = hrp.Position
-		local diff = goal - cur
-		local dist = diff.Magnitude
-		if dist <= 0.05 then result = true; break end
-
-		local step = math.min(getgenv().Config.DoorTravelSpeed * dt, dist)
-		local newPos = cur + diff.Unit * step
-		local flatDir = Vector3.new(diff.X, 0, diff.Z)
-		if flatDir.Magnitude > 0.5 then
-			hrp.CFrame = CFrame.lookAt(newPos, newPos + flatDir)
-		else
-			hrp.CFrame = CFrame.new(newPos) * (hrp.CFrame - hrp.CFrame.Position)
-		end
-		hrp.AssemblyLinearVelocity = Vector3.zero
-		hrp.AssemblyAngularVelocity = Vector3.zero
-		for _, part in ipairs(parts) do part.CanCollide = false end
-		-- keeps the walking animation playing while we slide
-		if flatDir.Magnitude > 0.5 then pcall(function() Humanoid:Move(flatDir.Unit, false) end) end
-	end
-	pcall(function() Humanoid:Move(Vector3.zero, false) end)
-	return result
-end
-
--- Walk speed is raised to "Walk Speed To Door" only while walking, then put back
-local origWalkSpeed = nil
+-- Walk speed (and, optionally, jump power) is raised only while walking to a door, then put back.
+-- This is real humanoid movement the whole time -- no CanCollide toggling, no CFrame sliding.
+local origWalkSpeed, origJumpPower, origJumpHeight = nil, nil, nil
 local function useDoorSpeed()
-	if Humanoid then
-		if not origWalkSpeed then origWalkSpeed = Humanoid.WalkSpeed end
-		Humanoid.WalkSpeed = getgenv().Config.DoorTravelSpeed
+	if not Humanoid then return end
+	if not origWalkSpeed then origWalkSpeed = Humanoid.WalkSpeed end
+	Humanoid.WalkSpeed = getgenv().Config.DoorTravelSpeed
+	if getgenv().Config.DoorJumpBoost then
+		if not origJumpPower then
+			origJumpPower = Humanoid.JumpPower
+			origJumpHeight = Humanoid.JumpHeight
+		end
+		pcall(function() Humanoid.JumpPower = math.max(origJumpPower or 50, 90) end)
+		pcall(function() Humanoid.JumpHeight = math.max(origJumpHeight or 7, 12) end)
 	end
 end
 local function restoreDoorSpeed()
 	if origWalkSpeed and Humanoid then Humanoid.WalkSpeed = origWalkSpeed end
-	origWalkSpeed = nil
-end
-
--- FLY route (backup when walking is blocked; no pathfinding, so walls can't stop it):
---   1) rise straight up to Fly Height   2) fly level over the door   3) drop onto the prompt
-local function flyTo(targetPos, reach, timeout)
-	local deadline = os.clock() + timeout
-	local hrp = HumanoidRootPart
-	local function near() return (hrp.Position - targetPos).Magnitude <= reach end
-	if near() then return true end
-
-	local cfg = getgenv().Config
-	local cruiseY = math.max(hrp.Position.Y, targetPos.Y) + cfg.FlyHeight
-
-	setFarmStatus("Rising")
-	if not glideTo(Vector3.new(hrp.Position.X, cruiseY, hrp.Position.Z), nil, deadline) then return false end
-
-	setFarmStatus("Flying to door")
-	if not glideTo(Vector3.new(targetPos.X, cruiseY, targetPos.Z), nil, deadline) then return false end
-
-	setFarmStatus("Landing on door")
-	glideTo(targetPos, nil, deadline)
-	return near()
+	if origJumpPower and Humanoid then pcall(function() Humanoid.JumpPower = origJumpPower end) end
+	if origJumpHeight and Humanoid then pcall(function() Humanoid.JumpHeight = origJumpHeight end) end
+	origWalkSpeed, origJumpPower, origJumpHeight = nil, nil, nil
 end
 
 -- WALK route: the real humanoid walks. It picks a spot to stand IN FRONT of the door that has
@@ -1856,10 +1921,9 @@ function DoorNav.follow(path, spot, goal, reach, deadline)
 				elseif stuck == 3 then
 					needFresh = true
 				elseif stuck == 4 then
-					local dir = Vector3.new(-dx, 0, -dz)
-					if dir.Magnitude > 0.1 then
-						hrp.CFrame = hrp.CFrame + dir.Unit * math.min(7, dir.Magnitude) + Vector3.new(0, 3, 0)
-					end
+					hum.Jump = true
+					hum:MoveTo(wp.Position)
+					task.wait(0.3)
 				else
 					break -- give up on this stand spot
 				end
@@ -1926,48 +1990,61 @@ function DoorNav.walk(goal, reach, deadline)
 	return false
 end
 
--- Direct Route ON : slide straight at the door through walls; if that stalls, fly over it
--- Direct Route OFF: walk with pathfinding first, fly over only when walking is blocked
+local lastDoorStatus = ""
+local function setDoorStatus(text)
+	if FarmUI.DoorStatus and text ~= lastDoorStatus then
+		lastDoorStatus = text
+		FarmUI.DoorStatus.Text = "Status: " .. text
+	end
+end
+
+-- Walks to the door with the real humanoid (pathfinding around obstacles). No noclip and no
+-- teleporting: when a route is blocked it tries other stand spots, fresh paths, jumps and
+-- side-steps. If the door still can't be reached it is skipped and the next one is tried.
 local function walkTo(targetPos, reach, timeout, door)
 	local hrp = HumanoidRootPart
 	if (hrp.Position - targetPos).Magnitude <= reach then return true end
 	DoorNav.door = door
 	local deadline = os.clock() + timeout
-
-	if getgenv().Config.DirectDoorRoute then
-		setFarmStatus("Going straight to door")
-		local function near() return HumanoidRootPart and (HumanoidRootPart.Position - targetPos).Magnitude <= reach end
-		if glideTo(targetPos, near, deadline) or near() then return true end
-		if not doorFarmActive() or doorTaken() then return false end
-		setFarmStatus("Stuck, flying over")
-		return flyTo(targetPos, reach, 15)
-	end
-
-	setFarmStatus(string.format("Walking to door (%dm)", math.floor((targetPos - hrp.Position).Magnitude)))
+	setDoorStatus(string.format("Walking to door (%dm)", math.floor((targetPos - hrp.Position).Magnitude)))
 	if DoorNav.walk(targetPos, reach, deadline) then return true end
-	if doorTaken() then return false end
-	if not doorFarmActive() then return false end
-	-- walking was blocked: fly over instead so the door still gets opened
-	setFarmStatus("Blocked, flying over")
-	return flyTo(targetPos, reach, 15)
+	if doorTaken() or not doorFarmActive() then return false end
+	setDoorStatus("Stuck, trying another way")
+	return DoorNav.straight(targetPos, reach, deadline)
 end
 
 local function doorLoopStep()
 	local cfg = getgenv().Config
 	if not doorFarmActive() then
 		DoorState.wants = false
+		farmState.door = nil
+		farmState.doorIdle = nil
 		restoreDoorSpeed()
 		farmDoorBusy = false
 		task.wait(0.3)
 		return
 	end
 
+	if not farmState.doorIdle then farmState.doorIdle = HumanoidRootPart.Position end
+
 	local door = pickDoor()
 	DoorState.wants = door ~= nil -- a ready door pauses the HVH spin until it is handled
+	farmState.door = door
 	if not door then
 		farmDoorBusy = false
-		if not cfg.KillFarmEnabled then setFarmStatus("Waiting for door") end
-		task.wait(0.5)
+		if cfg.DoorUseIdleSpot and farmState.doorIdle then
+			if (HumanoidRootPart.Position - farmState.doorIdle).Magnitude > 4 then
+				setDoorStatus("Returning to idle spot")
+				useDoorSpeed()
+				Humanoid:MoveTo(farmState.doorIdle)
+			else
+				restoreDoorSpeed()
+				setDoorStatus("Waiting at idle spot")
+			end
+		else
+			setDoorStatus("Waiting for door")
+		end
+		task.wait(0.4)
 		return
 	end
 
@@ -1980,24 +2057,10 @@ local function doorLoopStep()
 	local arrived = walkTo(target, reach, 35, door) and doorFarmActive()
 
 	if arrived then
-		setFarmStatus("Opening door")
-		local hrp = HumanoidRootPart
-		-- freeze in place on the prompt (no falling) while it is triggered
-		local holdCF = hrp.CFrame
-		local flatDiff = Vector3.new(target.X - hrp.Position.X, 0, target.Z - hrp.Position.Z)
-		if flatDiff.Magnitude > 0.2 then
-			holdCF = CFrame.lookAt(hrp.Position, hrp.Position + flatDiff)
-		end
-		local parts = {}
-		for _, d in ipairs(Character:GetDescendants()) do
-			if d:IsA("BasePart") then parts[#parts + 1] = d end
-		end
+		setDoorStatus("Opening door")
+		pcall(function() Humanoid:MoveTo(HumanoidRootPart.Position) end) -- stand still
 		local t0, lastPress = os.clock(), 0
 		while doorFarmActive() and door.Parent and not doorOpened(door, prompt) and os.clock() - t0 < cfg.OpenTimeout do
-			hrp.CFrame = holdCF
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.AssemblyAngularVelocity = Vector3.zero
-			for _, part in ipairs(parts) do part.CanCollide = false end
 			local now = os.clock()
 			if prompt and prompt.Parent and now - lastPress > 0.4 then
 				lastPress = now
@@ -2005,8 +2068,12 @@ local function doorLoopStep()
 			end
 			RunService.Heartbeat:Wait()
 		end
+		if door.Parent and doorOpened(door, prompt) then
+			farmState.doorsOpened = (farmState.doorsOpened or 0) + 1
+			if FarmUI.Doors then FarmUI.Doors.Text = "Doors opened: " .. farmState.doorsOpened end
+		end
 	else
-		setFarmStatus("Door unreachable, next")
+		setDoorStatus("Door unreachable, next")
 	end
 	-- a failed door is retried after 10s, an opened one after 30s
 	restoreDoorSpeed()
@@ -2017,6 +2084,47 @@ task.spawn(function()
 	while running do
 		local ok = pcall(doorLoopStep)
 		if not ok then task.wait(0.5) end
+	end
+end)
+
+-- Camera Looks At Door: aims the camera at the door while Auto Doors is heading to it
+pcall(function()
+	RunService:BindToRenderStep("TheS_DoorCam", Enum.RenderPriority.Camera.Value + 1, function()
+		local cfg = getgenv().Config
+		local d = farmState.door
+		if cfg.CameraLooksAtDoor and DoorState.wants and d and d.Parent and doorFarmActive() then
+			local cam = workspace.CurrentCamera
+			if cam then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, doorPos(d)) end
+		end
+	end)
+end)
+
+-- JJS reverts Health = 0, so this tries other ways to reset the character, one after another
+local function resetCharacter()
+	local hum, char = Humanoid, Character
+	if not hum or not char then return end
+	pcall(function() char:BreakJoints() end)
+	task.wait(0.6)
+	if hum.Health > 0 and char.Parent then
+		pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+	end
+	task.wait(0.6)
+	if hum.Health > 0 and char.Parent then
+		pcall(function() hum:TakeDamage(hum.MaxHealth * 10) end)
+	end
+end
+
+-- Respawn When Marked (Pumpkin): reset as soon as you are carrying the pumpkin mark
+local lastMarkedReset = 0
+task.spawn(function()
+	while running do
+		task.wait(0.5)
+		local cfg = getgenv().Config
+		if cfg.RespawnWhenMarked and Character and Humanoid and Humanoid.Health > 0
+			and os.clock() - lastMarkedReset > 6 and isCarryingPumpkin(player) then
+			lastMarkedReset = os.clock()
+			resetCharacter()
+		end
 	end
 end)
 
@@ -2548,17 +2656,10 @@ Actions.setSpot = function(btn)
 	end
 end
 
-local function waitForNewRoot(timeout)
-	local old, t0 = HumanoidRootPart, os.clock()
-	while os.clock() - t0 < timeout do
-		if HumanoidRootPart and HumanoidRootPart ~= old and HumanoidRootPart.Parent and Humanoid and Humanoid.Health > 0 then
-			return true
-		end
-		task.wait(0.1)
-	end
-	return false
-end
-
+-- Health = 0 is reverted by JJS, so this never touches Health. It works on position instead:
+--   method 1: force the CFrame every frame for ~1.2s (overpowers the server's position correction)
+--   method 2: ragdoll the character (no Health change), teleport while ragdolled, then get back up
+-- It repeats both until you are within 15 studs of the spot (max 25 rounds), then switches off.
 Actions.acBypass = function(on)
 	local cfg = getgenv().Config
 	cfg.ACBypassEnabled = on
@@ -2566,21 +2667,43 @@ Actions.acBypass = function(on)
 	AC.running = true
 	task.spawn(function()
 		local spot = AC.spot or HumanoidRootPart.Position -- no saved spot = where you switched it on
+		local goal = spot + Vector3.new(0, 3, 0)
 		local attempts, success = 0, false
+
+		local function arrived()
+			return HumanoidRootPart and HumanoidRootPart.Parent and (HumanoidRootPart.Position - spot).Magnitude < 15
+		end
+
 		while cfg.ACBypassEnabled and running and attempts < 25 and not success do
 			attempts = attempts + 1
-			pcall(function() Humanoid.Health = 0 end)
-			pcall(function() Character:BreakJoints() end)
-			if waitForNewRoot(8) then
+
+			-- method 1: position burst
+			local t0 = os.clock()
+			while cfg.ACBypassEnabled and os.clock() - t0 < 1.2 do
+				local hrp = HumanoidRootPart
+				if not hrp or not hrp.Parent then break end
+				hrp.CFrame = CFrame.new(goal)
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				hrp.AssemblyAngularVelocity = Vector3.zero
+				RunService.Heartbeat:Wait()
+			end
+			task.wait(0.3)
+			if arrived() then success = true; break end
+
+			-- method 2: ragdoll teleport
+			if cfg.ACBypassEnabled and Humanoid then
+				pcall(function() Humanoid:ChangeState(Enum.HumanoidStateType.Ragdoll) end)
 				task.wait(0.3)
-				for _ = 1, 3 do
-					if HumanoidRootPart then HumanoidRootPart.CFrame = CFrame.new(spot + Vector3.new(0, 3, 0)) end
-					task.wait(0.15)
+				if HumanoidRootPart and HumanoidRootPart.Parent then
+					HumanoidRootPart.CFrame = CFrame.new(goal)
 				end
+				task.wait(0.3)
+				pcall(function() Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp) end)
 				task.wait(0.4)
-				if HumanoidRootPart and (HumanoidRootPart.Position - spot).Magnitude < 15 then success = true end
+				if arrived() then success = true end
 			end
 		end
+
 		AC.running = false
 		cfg.ACBypassEnabled = false
 		if UIRefs.setAC then UIRefs.setAC(false) end
@@ -2642,6 +2765,78 @@ Actions.fullbright = function(on)
 		origLight = nil
 	end
 end
+
+-- FPS Boost: cheaper lighting + turns off particles/trails/beams (turning it off restores them)
+local fpsOff = {}
+Actions.fpsBoost = function(on)
+	getgenv().Config.FPSBoostEnabled = on
+	if on then
+		pcall(function() Lighting.GlobalShadows = false end)
+		pcall(function() settings().Rendering.QualityLevel = 1 end)
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if (d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam")) and d.Enabled then
+				fpsOff[#fpsOff + 1] = d
+				d.Enabled = false
+			end
+		end
+	else
+		pcall(function() Lighting.GlobalShadows = true end)
+		for _, d in ipairs(fpsOff) do
+			if d and d.Parent then d.Enabled = true end
+		end
+		fpsOff = {}
+	end
+end
+
+-- Auto Rejoin On Kick: asks Roblox to teleport you back into the game as the client closes.
+-- (works on some executors / kick types only)
+pcall(function()
+	game:BindToClose(function()
+		if getgenv().Config.AutoRejoinEnabled then
+			pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, player) end)
+		end
+	end)
+end)
+
+-- Walkspeed hotkey (set on the Movement page)
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	local cfg = getgenv().Config
+	if cfg.WalkspeedKeyCode and input.KeyCode == cfg.WalkspeedKeyCode and UIRefs.setSpeed then
+		UIRefs.setSpeed(not cfg.SpeedHackEnabled)
+	end
+end))
+
+-- Anti Stun + No Block Slow (best effort: JJS can name its stun flags differently)
+local STUN_WORDS = { "stun", "ragdoll", "knock", "freeze", "frozen" }
+local function isStunName(n)
+	n = string.lower(n)
+	for _, w in ipairs(STUN_WORDS) do
+		if string.find(n, w, 1, true) then return true end
+	end
+	return false
+end
+table.insert(connections, RunService.Heartbeat:Connect(function()
+	local cfg = getgenv().Config
+	if not Character or not Humanoid or Humanoid.Health <= 0 then return end
+	if cfg.AntiStunEnabled then
+		for _, c in ipairs(Character:GetChildren()) do
+			if (c:IsA("BoolValue") or c:IsA("NumberValue") or c:IsA("IntValue")) and isStunName(c.Name) then
+				c:Destroy()
+			end
+		end
+		for name, val in pairs(Character:GetAttributes()) do
+			if type(val) == "boolean" and val and isStunName(name) then
+				pcall(function() Character:SetAttribute(name, false) end)
+			end
+		end
+		if Humanoid.PlatformStand then Humanoid.PlatformStand = false end
+	end
+	if cfg.NoBlockSlowEnabled and not cfg.SpeedHackEnabled and not farmDoorBusy then
+		local ws = Humanoid.WalkSpeed
+		if ws > 0 and ws < cfg.BlockSpeed then Humanoid.WalkSpeed = cfg.BlockSpeed end
+	end
+end))
 
 ---------------------------------------------------------------------
 -- MAIN RENDER LOOP
@@ -2784,20 +2979,20 @@ end)
 -- small floating logo shown while the window is minimized (tap = restore, drag = move)
 local logoBtn = create("TextButton", {
 	Name = "MiniLogo", Visible = false, Text = "",
-	Size = UDim2.fromOffset(96, 96), AnchorPoint = Vector2.new(1, 0),
-	Position = UDim2.new(1, -110, 0, 30),
+	Size = UDim2.fromOffset(56, 56), AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -80, 0, 22),
 	BackgroundColor3 = C.Window, BorderSizePixel = 0, AutoButtonColor = false,
 }, screenGui)
 create("UICorner", { CornerRadius = UDim.new(1, 0) }, logoBtn)
-stroke(logoBtn, Color3.fromRGB(235, 236, 242), 3)
+stroke(logoBtn, Color3.fromRGB(235, 236, 242), 2)
 local logoRing = create("Frame", {
-	Size = UDim2.fromOffset(58, 26), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+	Size = UDim2.fromOffset(34, 15), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
 	Rotation = -28, BackgroundTransparency = 1,
 }, logoBtn)
 create("UICorner", { CornerRadius = UDim.new(1, 0) }, logoRing)
-stroke(logoRing, C.White, 4)
+stroke(logoRing, C.White, 2.5)
 local logoDot = create("Frame", {
-	Size = UDim2.fromOffset(20, 20), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+	Size = UDim2.fromOffset(12, 12), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
 	BackgroundColor3 = C.White, BorderSizePixel = 0,
 }, logoBtn)
 create("UICorner", { CornerRadius = UDim.new(1, 0) }, logoDot)
@@ -2862,7 +3057,6 @@ minBtn.MouseButton1Click:Connect(function() showMain(false) end)
 
 local function cleanup()
 	running = false
-	if origWalkSpeed and Humanoid then Humanoid.WalkSpeed = origWalkSpeed end
 	getgenv().Config.HVHEnabled = false
 	getgenv().Config.AutoFarmDoors = false
 	getgenv().Config.KillFarmEnabled = false
@@ -2870,6 +3064,9 @@ local function cleanup()
 	getgenv().Config.DomainEnabled = false
 	getgenv().Config.ACBypassEnabled = false
 	Actions.fullbright(false)
+	Actions.fpsBoost(false)
+	pcall(function() RunService:UnbindFromRenderStep("TheS_DoorCam") end)
+	restoreDoorSpeed()
 	setFarmInvisible(false)
 	if Humanoid then Humanoid.AutoRotate = true end
 	local cam = workspace.CurrentCamera
